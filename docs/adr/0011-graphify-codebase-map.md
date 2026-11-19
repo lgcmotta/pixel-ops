@@ -22,6 +22,9 @@ Current outputs:
 
 `.graphifyignore` excludes cache, generated outputs, heavy assets, and secrets from graph generation.
 
+Git tracks the report, JSON graph, manifest, and cost report. The HTML view,
+extraction cache, and machine-specific Graphify state are generated locally.
+
 ## Consequences
 
 Agents should use `graphify-out/GRAPH_REPORT.md` or `graphify-out/graph.json` as a navigation aid when working across modules.

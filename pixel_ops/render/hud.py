@@ -24,6 +24,7 @@ from pixel_ops.events.base import EventCategory, WorkEvent
 from pixel_ops.events.github_events import PullRequestSummary
 from pixel_ops.render.fonts import emoji_image, font, icon_font, scaled_px
 from pixel_ops.render.renderer import PixelRenderer
+from pixel_ops.render.account_hud import draw_hardware, draw_quota, draw_pr_activity, draw_status_strip
 
 
 HUD_THEME_TONES: dict[str, dict[str, tuple[int, int, int]]] = {
@@ -336,6 +337,7 @@ def draw_hud(
     layout_theme: str | None = None,
     crosshero: CrossHeroDaySnapshot | None = None,
     ai_activity: AIActivitySnapshot | None = None,
+    ai_quota=None,
 ) -> None:
     if layout:
         _draw_configured_hud(
@@ -358,6 +360,7 @@ def draw_hud(
             layout_theme,
             crosshero,
             ai_activity,
+            ai_quota,
         )
         return
 
@@ -413,6 +416,7 @@ def _draw_configured_hud(
     layout_theme: str | None,
     crosshero: CrossHeroDaySnapshot | None,
     ai_activity: AIActivitySnapshot | None = None,
+    ai_quota=None,
 ) -> None:
     small_font = font(11)
     chip_font = font(9)
@@ -439,6 +443,15 @@ def _draw_configured_hud(
 
     for raw, clock_box in _layout_items(layout, "clock"):
         _draw_clock_panel(draw, now, clock_box, item_palette(raw, "clock"), raw)
+
+    for raw, box in _layout_items(layout, "status_strip"):
+        draw_status_strip(draw, event, weather, now, box, item_palette(raw, "clock"), today_events)
+    for raw, box in _layout_items(layout, "hardware"):
+        draw_hardware(draw, pc_stats, now, box, item_palette(raw, "pc_stats"))
+    for raw, box in _layout_items(layout, "account_quota"):
+        draw_quota(draw, ai_quota, now, box, item_palette(raw, "gauges"))
+    for raw, box in _layout_items(layout, "pr_activity"):
+        draw_pr_activity(draw, pull_requests, now, box, item_palette(raw, "activity"))
 
     for raw, activity_box in _layout_items(layout, "activity"):
         _draw_activity_panel(draw, event, pull_requests, now, activity_box, item_palette(raw, "activity"))

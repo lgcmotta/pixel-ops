@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections import deque
 from collections.abc import Callable
@@ -21,6 +22,36 @@ class EncounterContext:
     rarity: str = "ambient"
     types_used: tuple[str, ...] = ()
     appeared_message: str = ""
+
+    @property
+    def pr_repository(self) -> str:
+        if not self.event or self.event.category != EventCategory.PULL_REQUEST:
+            return ""
+        repository = self.event.metadata.get("repository") or self.event.repo or ""
+        legacy = (self.event.external_id or "").rsplit("#", 1)
+        if "/" not in repository and len(legacy) == 2 and legacy[1].isdigit() and "/" in legacy[0]:
+            repository = legacy[0]
+        return repository
+
+    @property
+    def pr_number(self) -> int | None:
+        if not self.event or self.event.category != EventCategory.PULL_REQUEST:
+            return None
+        number = str(self.event.metadata.get("number") or "")
+        if number.isdigit() and int(number) > 0:
+            return int(number)
+        # Existing providers/cached events may predate the explicit metadata.
+        for value in (self.event.external_id or "", self.event.title):
+            match = re.search(r"#([1-9]\d*)\b", value)
+            if match:
+                return int(match.group(1))
+        return None
+
+    @property
+    def pr_reference(self) -> str:
+        repository = self.pr_repository
+        number = self.pr_number
+        return (repository or "PR") + (f"#{number}" if number is not None else "")
 
     def message_for(self, phase: GamePhase) -> str:
         if phase == GamePhase.ASH_THROWS:
@@ -74,12 +105,14 @@ class EncounterSystem:
         sources: list[EventSource] | None = None,
         queue_limit: int = 6,
         on_event: Callable[[WorkEvent], None] | None = None,
+        capture_categories: list[str] | None = None,
     ):
         self.selector = selector
         self.sources = sources or []
         self.queue: deque[WorkEvent] = deque(maxlen=queue_limit)
         self.recent_events: deque[WorkEvent] = deque(maxlen=24)
         self.on_event = on_event
+        self.capture_categories = frozenset(capture_categories) if capture_categories is not None else None
         self._seen: set[str] = set()
         self.debug = _env_bool("PIXEL_OPS_DEBUG_EVENTS")
 
@@ -96,8 +129,11 @@ class EncounterSystem:
         self._seen.add(key)
         if self.on_event:
             self.on_event(event)
-        self.queue.append(event)
         self.recent_events.append(event)
+        if self.capture_categories is not None and event.category.value not in self.capture_categories:
+            self._debug(f"ambient only category={event.category.value} key={key}")
+            return
+        self.queue.append(event)
         self._debug(f"queued category={event.category.value} key={key} size={len(self.queue)}")
 
     def recent(self, now: datetime, max_age_seconds: int = 1800) -> list[WorkEvent]:

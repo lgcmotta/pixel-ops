@@ -1,5 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -7,12 +7,19 @@ import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { promisify } from "node:util";
 import { defineConfig, type Plugin } from "vite";
+import { CodexAccountBridge, PythonAccountBridge, localAccountRequest } from "./server/codexAccount";
 
 const repoRoot = path.resolve(process.env.PIXEL_OPS_REPO_ROOT || path.resolve(__dirname, ".."));
 const pixelOpsKiteRoot = path.join(repoRoot, "infra/cloudflare/pixelops-kite");
+const localDisplayPath = path.join(repoRoot, "pixel_ops/config/display.local.json");
+const localIntegrationsPath = path.join(repoRoot, "pixel_ops/config/integrations.local.json");
+const privateCalendarKeys = ["calendar_ids", "ics_urls"] as const;
 const execFileAsync = promisify(execFile);
 const pythonCmd = resolvePythonCommand();
-let runtimeProcess: ChildProcessWithoutNullStreams | null = null;
+let accountBridge: CodexAccountBridge | null = null;
+let accountBridgeSettings = "";
+let calendarBridge: PythonAccountBridge | null = null;
+let runtimeProcess: ChildProcess | null = null;
 const runtimeLogs: string[] = [];
 let firmwareProcess: ChildProcessWithoutNullStreams | null = null;
 const firmwareLogs: string[] = [];
@@ -133,13 +140,14 @@ const integrationSidecars: Record<string, ConfigDescriptor[]> = {
 };
 
 const integrationLayoutWindows: Record<string, LayoutWindowDescriptor[]> = {
+  codex_account: [{ kind: "account_quota", label: "AI Usage", tone: "#7ee0bd" }],
   codex_status: [{ kind: "codex_status", label: "Codex Semaphore", tone: "#f7c948" }],
   gamification: [{ kind: "gamification", label: "Player HP", tone: "#ef6461" }],
   ai_usage: [
     { kind: "gauges", label: "AI Gauges", tone: "#7ee0bd" },
     { kind: "mana", label: "Mana", tone: "#4f9fff" },
   ],
-  pc_stats: [{ kind: "pc_stats", label: "PC Stats", tone: "#9bd0ff" }],
+  pc_stats: [{ kind: "pc_stats", label: "PC Stats", tone: "#9bd0ff" }, { kind: "hardware", label: "Hardware Gauges", tone: "#9bd0ff" }],
   weather: [
     { kind: "weather", label: "Weather Now", tone: "#e8c766" },
     { kind: "weather_forecast", label: "Weather Forecast", tone: "#9bd0ff" },
@@ -331,7 +339,7 @@ async function buildConfigManifest() {
   };
 }
 
-async function configDescriptorsFor(selectedPlugins: string[]) {
+async function configDescriptorsFor(selectedPlugins: string[], integrationsConfig: { integrations?: Record<string, { enabled?: boolean }> }) {
   const manifest = await buildConfigManifest();
   const selectedPluginSet = new Set(selectedPlugins);
   const descriptors = [...coreConfigFiles];
@@ -341,32 +349,58 @@ async function configDescriptorsFor(selectedPlugins: string[]) {
     }
   }
 
-  const integrationsPath = coreConfigFiles.find((item) => item.key === "integrations")?.relativePath;
-  if (integrationsPath) {
-    const raw = await fs.readFile(path.join(repoRoot, integrationsPath), "utf8");
-    const integrationsConfig = JSON.parse(raw) as { integrations?: Record<string, { enabled?: boolean }> };
-    for (const integration of manifest.integrations) {
-      if (integrationsConfig.integrations?.[integration.key]?.enabled) {
-        descriptors.push(...integration.configs);
-      }
+  for (const integration of manifest.integrations) {
+    if (integrationsConfig.integrations?.[integration.key]?.enabled) {
+      descriptors.push(...integration.configs);
     }
   }
 
   return descriptors;
 }
 
-async function loadRuntimeConfig(selectedPlugins: string[]) {
-  const descriptors = await configDescriptorsFor(selectedPlugins);
+async function readOptionalConfig(file: string) {
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+async function readIntegrations(local: boolean) {
+  const privateConfig = local ? await readOptionalConfig(localIntegrationsPath) : {};
+  const config = privateConfig.integrations
+    ? { integrations: privateConfig.integrations }
+    : JSON.parse(await fs.readFile(path.join(repoRoot, "pixel_ops/config/integrations.json"), "utf8"));
+  const calendar = config.integrations?.google_calendar;
+  if (calendar) {
+    for (const key of privateCalendarKeys) {
+      if (Array.isArray(privateConfig.google_calendar?.[key])) calendar[key] = privateConfig.google_calendar[key];
+    }
+  }
+  return config;
+}
+
+async function loadRuntimeConfig(selectedPlugins: string[], local: boolean) {
+  const integrations = await readIntegrations(local);
+  const descriptors = await configDescriptorsFor(selectedPlugins, integrations);
   const entries = await Promise.all(
     descriptors.map(async (descriptor) => {
-      const raw = await fs.readFile(path.join(repoRoot, descriptor.relativePath), "utf8");
-      return [descriptor.key, JSON.parse(raw)] as const;
+      const file = path.join(repoRoot, descriptor.relativePath);
+      if (descriptor.key === "integrations") return [descriptor.key, integrations] as const;
+      if (descriptor.key === "display" && local && await pathExists("pixel_ops/config/display.local.json")) {
+        return [descriptor.key, await readOptionalConfig(localDisplayPath)] as const;
+      }
+      const value = descriptor.key === "discord_people"
+        ? await readOptionalConfig(file)
+        : JSON.parse(await fs.readFile(file, "utf8"));
+      return [descriptor.key, value] as const;
     }),
   );
   return Object.fromEntries(entries);
 }
 
-async function saveRuntimeConfig(payload: unknown) {
+async function saveRuntimeConfig(payload: unknown, local: boolean) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Invalid config payload.");
   }
@@ -381,8 +415,26 @@ async function saveRuntimeConfig(payload: unknown) {
   await Promise.all(
     configFiles.map(async (descriptor) => {
       if (!(descriptor.key in record)) return;
-      const target = path.join(repoRoot, descriptor.relativePath);
-      await fs.writeFile(target, `${JSON.stringify(record[descriptor.key], null, 2)}\n`, "utf8");
+      const target = descriptor.key === "display" && local && await pathExists("pixel_ops/config/display.local.json")
+        ? localDisplayPath
+        : path.join(repoRoot, descriptor.relativePath);
+      const value = record[descriptor.key];
+      if (descriptor.key === "integrations") {
+        const integrations = value as { integrations?: { google_calendar?: Record<string, unknown> } };
+        const calendar = integrations.integrations?.google_calendar;
+        const savedLocal = local ? await readOptionalConfig(localIntegrationsPath) : {};
+        if (calendar) {
+          if (local) savedLocal.google_calendar = Object.fromEntries(privateCalendarKeys.map(key => [key, calendar[key] ?? []]));
+          for (const key of privateCalendarKeys) calendar[key] = [];
+        }
+        if (local && (calendar || savedLocal.integrations)) {
+          const localOverride = Boolean(savedLocal.integrations);
+          if (localOverride) savedLocal.integrations = integrations.integrations;
+          await fs.writeFile(localIntegrationsPath, `${JSON.stringify(savedLocal, null, 2)}\n`, { mode: 0o600 });
+          if (localOverride) return;
+        }
+      }
+      await fs.writeFile(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     }),
   );
 }
@@ -450,7 +502,7 @@ async function writeDotEnvValue(name: string, value: string): Promise<void> {
 
 async function githubToken(tokenEnv: string): Promise<string> {
   const name = tokenEnv || "PIXEL_OPS_GITHUB_TOKEN";
-  return process.env[name] || (await readDotEnv())[name] || "";
+  return (await readDotEnv())[name] || process.env[name] || "";
 }
 
 async function githubJson<T>(url: string, token: string): Promise<T> {
@@ -788,12 +840,13 @@ function runtimePidPath() {
 async function runtimeStatus() {
   const discovered = await discoverRuntimeProcess();
   const screens = discovered ? await screenControlRequest("/status").catch(() => unavailableScreenStatus()) : unavailableScreenStatus();
+  const savedLog = await fs.readFile(path.join(repoRoot, "pixel_ops/output/runtime.log"), "utf8").catch(() => "");
   return {
     running: discovered !== null,
     pid: discovered?.pid ?? null,
     source: discovered?.source ?? null,
     command: discovered?.command ?? null,
-    logs: runtimeLogs.slice(-80),
+    logs: [...runtimeLogs.slice(-30), ...savedLog.slice(-16000).split(/\r?\n/).filter(Boolean)].slice(-80),
     screens,
   };
 }
@@ -830,7 +883,7 @@ async function screenControlRequest(pathname: string, body?: Record<string, unkn
 function runtimeCommandArgs(mode: "configured" | "window" = "configured"): string[] {
   const args = ["pixel_ops/main.py", "--forever"];
   if (mode === "window") {
-    args.push("--output", "window", "--offline");
+    args.push("--output", "window", "--window-preview", "--offline");
   }
   return args;
 }
@@ -857,15 +910,22 @@ async function startRuntime(mode: "configured" | "window" = "configured") {
     return runtimeStatus();
   }
   const args = runtimeCommandArgs(mode);
-  runtimeProcess = spawn(pythonCmd, args, {
-    cwd: repoRoot,
-    env: { ...process.env, PYTHONUNBUFFERED: "1" },
-  });
+  await fs.mkdir(path.join(repoRoot, "pixel_ops/output"), { recursive: true });
+  const log = await fs.open(path.join(repoRoot, "pixel_ops/output/runtime.log"), "w");
+  try {
+    runtimeProcess = spawn(pythonCmd, args, {
+      cwd: repoRoot,
+      env: { ...process.env, ...(await readDotEnv()), PYTHONUNBUFFERED: "1" },
+      windowsHide: true,
+      detached: true,
+      stdio: ["ignore", log.fd, log.fd],
+    });
+  } finally { await log.close(); }
+  runtimeProcess.unref();
   pushRuntimeLog(`Started ${mode === "window" ? "window" : "configured"} runtime pid=${runtimeProcess.pid ?? "unknown"}`);
   pushRuntimeLog(`${pythonCmd} ${args.join(" ")}`);
   writeRuntimePid(runtimeProcess.pid).catch(() => undefined);
-  runtimeProcess.stdout.on("data", (chunk) => pushRuntimeLog(String(chunk)));
-  runtimeProcess.stderr.on("data", (chunk) => pushRuntimeLog(String(chunk)));
+  runtimeProcess.on("error", (error) => pushRuntimeLog(`Runtime failed to start: ${error.message}`));
   runtimeProcess.on("exit", (code, signal) => {
     pushRuntimeLog(`Runtime exited code=${code ?? "-"} signal=${signal ?? "-"}`);
     runtimeProcess = null;
@@ -931,7 +991,7 @@ function isProcessAlive(pid: number) {
 async function processCommand(pid: number): Promise<string> {
   try {
     if (process.platform === "win32") {
-      const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | ForEach-Object { $_.CommandLine }`]);
+      const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | ForEach-Object { $_.CommandLine }`], { windowsHide: true });
       return stdout.trim();
     }
     const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "command="]);
@@ -948,7 +1008,7 @@ async function scanRuntimeProcesses(): Promise<RuntimeProcessInfo | null> {
         "-NoProfile",
         "-Command",
         "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'pixel_ops[\\\\\\\\/]main\\.py' -and $_.CommandLine -match '--forever' } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-      ]);
+      ], { windowsHide: true });
       const parsed = stdout.trim() ? JSON.parse(stdout) : null;
       const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
       const match = rows.find((row) => Number.isInteger(Number(row.ProcessId)) && isPixelOpsRuntimeCommand(String(row.CommandLine || "")));
@@ -1099,11 +1159,20 @@ function workerWsUrl(workerUrl: string): string {
 async function scanThermalrightUsbDisplays() {
   const script = `
 import json
+from usb.core import NoBackendError
+from pixel_ops.hardware.lian_li_winusb import scan_lian_li_serials
 from pixel_ops.hardware.thermalright_usb import scan_thermalright_devices
 from pixel_ops.hardware.usb_bulk import scan_turzx_devices
 
-thermalright_devices = scan_thermalright_devices(log=lambda *_args, **_kwargs: None)
-turzx_devices = scan_turzx_devices()
+try:
+    thermalright_devices = scan_thermalright_devices(log=lambda *_args, **_kwargs: None)
+    turzx_devices = scan_turzx_devices()
+except NoBackendError:
+    thermalright_devices, turzx_devices = [], []
+    libusb_note = " Install libusb to scan Thermalright and TURZX devices."
+else:
+    libusb_note = ""
+lian_li_serials = scan_lian_li_serials()
 devices = [
     {
         "target": "thermalright",
@@ -1130,10 +1199,23 @@ devices = [
         "has_default_endpoints": False,
     }
     for device in turzx_devices
+] + [
+    {
+        "target": "lian_li_usb",
+        "vid": "0x1cbe",
+        "pid": "0xa088",
+        "manufacturer": "Lian Li",
+        "product": "US88v1",
+        "serial_number": serial,
+        "bus": None,
+        "address": None,
+        "has_default_endpoints": True,
+    }
+    for serial in lian_li_serials
 ]
 print(json.dumps({
     "ok": True,
-    "message": f"{len(devices)} USB display candidate(s) found ({len(thermalright_devices)} Thermalright, {len(turzx_devices)} TURZX).",
+    "message": f"{len(devices)} USB display candidate(s) found." + libusb_note,
     "devices": devices,
 }))
 `;
@@ -1150,7 +1232,7 @@ async function identifyThermalrightDisplay(display: Record<string, unknown>) {
   if (await discoverRuntimeProcess()) {
     return {
       ok: false,
-      message: "Stop the running window/runtime before identifying USB displays. Thermalright USB can only be claimed by one process at a time.",
+      message: "Stop the running Pixel Ops runtime before identifying USB displays.",
     };
   }
   const script = `
@@ -1168,7 +1250,7 @@ number = int(display.get("identify_number") or 1)
 rotation = int(display.get("rotation") or 0)
 if rotation not in (0, 90, 180, 270):
     rotation = 0
-native_width, native_height = (1920, 462) if target == "thermalright" else (320, 480)
+native_width, native_height = {"thermalright": (1920, 462), "lian_li_usb": (1920, 480)}.get(target, (320, 480))
 width, height = (native_height, native_width) if rotation in (90, 270) else (native_width, native_height)
 image = Image.new("RGB", (width, height), (10, 14, 24))
 draw = ImageDraw.Draw(image)
@@ -1191,6 +1273,9 @@ if rotation:
     image = image.rotate(-rotation, expand=True)
 if target == "turzx":
     output = TURZXOutput.from_config(native_width, native_height, turzx)
+elif target == "lian_li_usb":
+    from pixel_ops.outputs.lian_li_usb import LianLiUsbOutput
+    output = LianLiUsbOutput.from_config(display.get("lian_li_usb") or {})
 else:
     output = ThermalrightOutput(
         vid=int(str(thermalright.get("vid", "0x0416")), 0),
@@ -1574,19 +1659,21 @@ function runtimeConfigApi(): Plugin {
     configureServer(server) {
       server.middlewares.use("/api/config", async (req, res) => {
         try {
+          const local = localAccountRequest(req);
+          res.setHeader("Cache-Control", "no-store");
           if (req.method === "GET") {
             const url = new URL(req.url || "/", "http://localhost");
             const selectedPlugins = (url.searchParams.get("plugins") || "")
               .split(",")
               .map((item) => item.trim())
               .filter(Boolean);
-            sendJson(res, 200, await loadRuntimeConfig(selectedPlugins));
+            sendJson(res, 200, await loadRuntimeConfig(selectedPlugins, local));
             return;
           }
 
           if (req.method === "PUT") {
             const body = await readBody(req);
-            await saveRuntimeConfig(JSON.parse(body));
+            await saveRuntimeConfig(JSON.parse(body), local);
             sendJson(res, 200, { ok: true });
             return;
           }
@@ -1681,6 +1768,59 @@ function runtimeConfigApi(): Plugin {
         } catch (error) {
           sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
         }
+      });
+      server.httpServer?.once("close", () => { accountBridge?.close(); calendarBridge?.close(); });
+      server.middlewares.use("/api/google-calendar", async (req, res) => {
+        if (!localAccountRequest(req)) { sendJson(res, 403, { error: "Calendar controls require a local same-origin connection." }); return; }
+        res.setHeader("Cache-Control", "no-store");
+        try {
+          const url = new URL(req.url || "/", "http://localhost");
+          const routes: Record<string, string> = { "/status": "status", "/client/import": "client/import", "/login/start": "login/start", "/login/status": "login/status", "/login/cancel": "login/cancel", "/disconnect": "disconnect", "/calendars": "calendars" };
+          const method = routes[url.pathname];
+          const get = method === "status" || method === "login/status" || method === "calendars";
+          if (!method || req.method !== (get ? "GET" : "POST")) { sendJson(res, 405, { error: "Unsupported calendar action." }); return; }
+          calendarBridge ??= new PythonAccountBridge(pythonCmd, repoRoot, path.join(repoRoot, "pixel_ops/cache/google_calendar"), "", "google_calendar");
+          const body = get ? {} : JSON.parse(await readBody(req) || "{}");
+          sendJson(res, 200, await calendarBridge.call(method, method === "client/import" ? { client: body.client } : {}));
+        } catch {
+          sendJson(res, 503, { error: "Google Calendar connection unavailable. Check the Desktop app client, sign-in, Calendar API and calendar permissions." });
+        }
+      });
+      server.middlewares.use("/api/codex-account", async (req, res) => {
+        if (!localAccountRequest(req)) {
+          sendJson(res, 403, { error: "Account controls require a local same-origin connection." });
+          return;
+        }
+        res.setHeader("Cache-Control", "no-store");
+        try {
+          const url = new URL(req.url || "/", "http://localhost");
+          const routes: Record<string, string> = { "/status": "status", "/login/start": "login/start", "/login/status": "login/status", "/login/cancel": "login/cancel", "/refresh": "refresh", "/disconnect": "disconnect" };
+          const method = routes[url.pathname];
+          const get = method === "status" || method === "login/status";
+          if (!method || req.method !== (get ? "GET" : "POST")) {
+            sendJson(res, 405, { error: "Unsupported account action." });
+            return;
+          }
+          const saved = await readIntegrations(true);
+          const cfg = saved.integrations?.codex_account || {};
+          const settings = JSON.stringify([cfg.account_home || "", cfg.executable || "codex"]);
+          if (!accountBridge || settings !== accountBridgeSettings) {
+            accountBridge?.close();
+            accountBridge = new CodexAccountBridge(pythonCmd, repoRoot, cfg.account_home || "", cfg.executable || "codex");
+            accountBridgeSettings = settings;
+          }
+          const body = get ? {} : JSON.parse(await readBody(req) || "{}");
+          sendJson(res, 200, await accountBridge.call(method, { flow: body.flow === "device" ? "device" : "browser" }));
+        } catch {
+          sendJson(res, 503, { error: "Account connection unavailable. Check the Codex CLI and retry sign-in." });
+        }
+      });
+      server.middlewares.use("/api/monitors", async (req, res) => {
+        if (!localAccountRequest(req)) { sendJson(res, 403, { error: "Local access required." }); return; }
+        try {
+          const { stdout } = await execFileAsync(pythonCmd, ["-m", "pixel_ops.outputs.window"], { cwd: repoRoot, windowsHide: true, timeout: 10000 });
+          sendJson(res, 200, JSON.parse(stdout.trim()));
+        } catch { sendJson(res, 503, { error: "Monitor enumeration unavailable." }); }
       });
       server.middlewares.use("/api/github", async (req, res) => {
         try {

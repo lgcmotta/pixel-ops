@@ -27,9 +27,12 @@ class GitHubIntegrationPlugin:
                 cfg.get("startup_lookback_seconds", ctx.env_int("PIXEL_OPS_GITHUB_STARTUP_LOOKBACK_SECONDS", 3600))
             ),
             timeout_seconds=int(cfg.get("timeout_seconds", ctx.env_int("PIXEL_OPS_GITHUB_TIMEOUT_SECONDS", 20))),
+            include_owned=bool(cfg.get("include_owned", False)),
+            discovery_seconds=int(cfg.get("discovery_seconds", 900)),
+            cache_path=ctx.root_dir / "pixel_ops/cache/github/pull_requests.json",
         )
         return IntegrationContribution(
-            event_sources=[source, ObservationEventSource("github.pull_requests_updated", "github", source, "open_pull_requests")],
+            event_sources=[source, ObservationEventSource("github.pull_requests_updated", "github", source, "open_pull_requests", poll_seconds=1)],
             warmers=[source.warm],
         )
 

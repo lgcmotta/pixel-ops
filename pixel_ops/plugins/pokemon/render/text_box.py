@@ -25,7 +25,39 @@ def _load_text_box_frame(size: tuple[int, int]) -> Image.Image | None:
         with Image.open(MENU_SHEET) as sheet:
             # Blank battle message box from the FireRed/LeafGreen interface sheet.
             _TEXT_BOX_FRAME = sheet.convert("RGB").crop((297, 56, 535, 107))
-    return _TEXT_BOX_FRAME.resize(size, Image.Resampling.NEAREST)
+    # Preserve the corners and trim. Stretching the complete 238px asset across
+    # a panoramic box also stretches its left border underneath the dialogue.
+    source = _TEXT_BOX_FRAME
+    edge_x, edge_y = 12, 8
+    target_x = min(scaled_px(edge_x), size[0] // 3)
+    target_y = min(scaled_px(edge_y), size[1] // 3)
+    src_x, src_y = (0, edge_x, source.width - edge_x, source.width), (0, edge_y, source.height - edge_y, source.height)
+    dst_x, dst_y = (0, target_x, size[0] - target_x, size[0]), (0, target_y, size[1] - target_y, size[1])
+    result = Image.new("RGB", size)
+    for row in range(3):
+        for col in range(3):
+            tile = source.crop((src_x[col], src_y[row], src_x[col + 1], src_y[row + 1]))
+            tile = tile.resize((dst_x[col + 1] - dst_x[col], dst_y[row + 1] - dst_y[row]), Image.Resampling.NEAREST)
+            result.paste(tile, (dst_x[col], dst_y[row]))
+    return result
+
+
+def text_box_layout(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str):
+    """Shared wrapping/origin for drawing and encounter scroll timing."""
+    x0, y0, x1, y1 = box
+    left = x0 + scaled_px(18)
+    top = y0 + scaled_px(10)
+    bottom = y1 - scaled_px(10)
+    text_font = font(14)
+    bbox = draw.textbbox((0, 0), "Ag", font=text_font)
+    glyph_height = bbox[3] - bbox[1]
+    max_lines = max(1, 1 + (bottom - top - glyph_height) // text_box_line_height())
+    lines = wrap_text_lines(draw, text, text_font, max(1, x1 - left - scaled_px(34)))
+    count = min(max_lines, len(lines))
+    block_height = glyph_height + max(0, count - 1) * text_box_line_height()
+    # Pillow's font origin is above its visible glyphs; center the actual ink.
+    text_y = top + max(0, (bottom - top - block_height) // 2) - bbox[1]
+    return left, text_y, lines, max_lines
 
 
 def draw_text_box(image: Image.Image, box: tuple[int, int, int, int], text: str, pal, frame: int) -> None:
@@ -36,29 +68,22 @@ def draw_text_box(image: Image.Image, box: tuple[int, int, int, int], text: str,
         image.paste(asset, (x0, y0))
         text_fill = (248, 248, 248)
         cursor_fill = (248, 248, 248)
-        text_x = x0 + scaled_px(12)
-        text_y = y0 + text_box_top_padding()
     else:
         PixelRenderer.draw_panel(draw, box, pal.panel, pal.panel_shadow, pal.ink)
         text_fill = pal.ink
         cursor_fill = pal.red
-        text_x = x0 + scaled_px(12)
-        text_y = y0 + text_box_top_padding()
 
     text_font = font(14)
-    max_text_width = x1 - text_x - scaled_px(26)
-    lines = wrap_text_lines(draw, text, text_font, max_text_width)
+    text_x, text_y, lines, max_lines = text_box_layout(draw, box, text)
 
     y = text_y
-    max_lines = text_box_visible_lines((x0, y0, x1, y1), text, text_y=text_y)
     visible_lines = _scroll_lines(lines, max_lines, frame)
     for line in visible_lines:
         draw.text((text_x, y), line, font=text_font, fill=text_fill)
         y += text_box_line_height()
     if frame % 20 < 10:
         cursor_h = text_box_cursor_height()
-        cursor_y = min(y1 - cursor_h - scaled_px(4), y + scaled_px(1))
-        cursor_y = max(y0 + text_box_top_padding(), cursor_y)
+        cursor_y = y0 + (y1 - y0 - cursor_h) // 2
         draw.polygon(
             [
                 (x1 - scaled_px(24), cursor_y),

@@ -47,3 +47,11 @@ Current ADRs:
 - [0032 - Waveshare Bluetooth frame transport](0032-waveshare-bluetooth-output.md)
 
 - [0033 — Token history HUD](0033-token-history-hud.md)
+- [0034 - Account quota is a neutral observation](0034-account-quota-is-a-neutral-observation.md)
+- [0035 - Lian Li is a desktop output](0035-lian-li-is-a-desktop-output.md)
+- [0036 - Windows desktop lifecycle is per-user](0036-windows-desktop-lifecycle-is-per-user.md)
+- [0037 - PR inventory is not a new arrival](0037-pr-inventory-is-not-a-new-arrival.md)
+- [0038 - Google Calendar uses read-only user OAuth](0038-google-calendar-uses-read-only-user-oauth.md)
+- [0039 - Kraken is a companion browser output](0039-kraken-is-a-companion-browser-output.md)
+- [0040 - Show off is an isolated game projection](0040-show-off-is-an-isolated-game-projection.md)
+- [0041 - Lian Li native USB output](0041-lian-li-native-usb-output.md)

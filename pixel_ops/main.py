@@ -17,12 +17,14 @@ if str(ROOT_DIR) not in sys.path:
 from pixel_ops.data_sources.calendar import CalendarEvent, next_ics_event, next_mock_event, today_ics_events
 from pixel_ops.config_loader import ConfigWatcher, load_config_prefer_json
 from pixel_ops.core.screen_control import ScreenControlServer
+from pixel_ops.outputs.browser import BrowserOutputServer
 from pixel_ops.events.mock_events import MockEventSource
 from pixel_ops.events.observation_sources import CallableObservationSource
 from pixel_ops.integration_plugins.base import IntegrationContext
 from pixel_ops.integration_plugins.registry import build_integration_runtime
 from pixel_ops.outputs.lcd_usb import LcdUsbOutput
 from pixel_ops.outputs.lcd_ble import LcdBleOutput
+from pixel_ops.outputs.lian_li_usb import LANDSCAPE_SIZE as LIAN_LI_LANDSCAPE_SIZE, LianLiUsbOutput
 from pixel_ops.outputs import EInkHttpOutput, GifOutput, LcdHttpOutput, PreviewOutput, TURZXOutput, ThermalrightOutput, WindowOutput
 from pixel_ops.outputs.base import CroppedOutput, DisplayOutput
 from pixel_ops.plugins.ai.plugin import build_ai_plugin
@@ -30,6 +32,8 @@ from pixel_ops.plugins.registry import available_plugins, get_plugin
 from pixel_ops.render.splash import render_splash, splash_frame_count, splash_seconds
 
 APP_DIR = Path(__file__).resolve().parent
+DEVICE_OUTPUTS = ("turzx", "thermalright", "eink", "lcd", "lian_li_usb")
+OUTPUT_TARGETS = ("preview", "gif", *DEVICE_OUTPUTS, "window")
 
 
 @dataclass
@@ -58,9 +62,26 @@ def load_config(path: Path) -> dict:
     return load_config_prefer_json(path)
 
 
+def load_display_config() -> dict:
+    path = APP_DIR / "config/display.json"
+    local_path = path.with_name("display.local.json")
+    return load_config(local_path if local_path.exists() else path)["display"]
+
+
 def load_runtime_config() -> dict:
     path = APP_DIR / "config/integrations.json"
-    return load_config(path) if path.exists() else {"integrations": {}}
+    config = load_config(path) if path.exists() else {"integrations": {}}
+    private_path = path.with_name("integrations.local.json")
+    private = load_config(private_path) if private_path.exists() else {}
+    if "integrations" in private:
+        config = {"integrations": private["integrations"]}
+    google_calendar = config.get("integrations", {}).get("google_calendar")
+    if google_calendar is not None:
+        local_calendar = private.get("google_calendar", {})
+        for key in ("calendar_ids", "ics_urls"):
+            if key in local_calendar:
+                google_calendar[key] = local_calendar[key]
+    return config
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -103,10 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pixel OPs timezone dashboard renderer.")
     plugin_names = sorted(available_plugins())
     parser.add_argument("--plugin", choices=plugin_names, help="Interface plugin to render. Defaults to display.device.plugin.")
-    parser.add_argument("--output", choices=("preview", "gif", "turzx", "thermalright", "eink", "lcd", "window"), help="Frame output target.")
+    parser.add_argument("--output", choices=OUTPUT_TARGETS, help="Frame output target.")
     parser.add_argument("--display", action="store_true", help="Send frames to UsbMonitor via USB bulk.")
     parser.add_argument("--window", action="store_true", help="Render frames in a desktop window.")
     parser.add_argument("--window-scale", type=int, help="Desktop window pixel scale.")
+    parser.add_argument("--window-preview", action="store_true", help="Use a normal, reduced desktop window for display setup.")
     parser.add_argument("--preview", action="store_true", help="Render a single PNG preview.")
     parser.add_argument("--gif", action="store_true", help="Render an animated GIF preview.")
     parser.add_argument("--orientation", choices=("vertical", "horizontal"), help="Display layout orientation.")
@@ -216,7 +238,7 @@ def runtime_display_configs(args: argparse.Namespace, display_cfg: dict) -> list
         for item in displays
         if isinstance(item, dict)
         and bool(item.get("enabled", True))
-        and _normalize_output_name(item.get("output") or item.get("target") or device_cfg.get("output") or device_cfg.get("target")) in ("thermalright", "turzx", "eink", "lcd")
+        and _normalize_output_name(item.get("output") or item.get("target") or device_cfg.get("output") or device_cfg.get("target")) in DEVICE_OUTPUTS
     ]
     return configs or [runtime_display_config(args, display_cfg)]
 
@@ -288,6 +310,8 @@ def _display_runtime_config(display_cfg: dict, display: dict) -> dict:
         device_cfg["eink"] = _merged_device_config(device_cfg.get("eink"), display.get("eink"))
     elif output_name == "lcd":
         device_cfg["lcd"] = _merged_device_config(device_cfg.get("lcd"), display.get("lcd"))
+    elif output_name == "lian_li_usb":
+        device_cfg["lian_li_usb"] = _merged_device_config(device_cfg.get("lian_li_usb"), display.get("lian_li_usb"))
     active["device"] = device_cfg
     if display is not None:
         rotation = _normalize_rotation(display.get("rotation", 0))
@@ -362,7 +386,7 @@ def _runtime_output_name(args: argparse.Namespace, display_cfg: dict) -> str:
         return selected_output(args)
     device_cfg = runtime_device_config(display_cfg)
     output = _normalize_output_name(device_cfg.get("output") or device_cfg.get("target") or "preview")
-    if output in ("preview", "gif", "turzx", "thermalright", "eink", "lcd", "window"):
+    if output in OUTPUT_TARGETS:
         return output
     return "preview"
 
@@ -435,13 +459,20 @@ def build_output(
         lcd_cfg = _merged_device_config(runtime_device_config(display_cfg).get("lcd"), display.get("lcd") if display else None)
         output_class = {"usb": LcdUsbOutput, "bluetooth": LcdBleOutput, "http": LcdHttpOutput}[lcd_cfg.get("transport", "http")]
         return output_class.from_config(width, height, lcd_cfg)
+    if output_name == "lian_li_usb":
+        display = None if "display_region" in display_cfg else _configured_display_for_output(display_cfg, output_name)
+        cfg = _merged_device_config(runtime_device_config(display_cfg).get("lian_li_usb"), display.get("lian_li_usb") if display else None)
+        return LianLiUsbOutput.from_config(cfg)
     if output_name == "window":
-        return WindowOutput(width=width, height=height, scale=runtime_window_scale(args, display_cfg))
+        window_cfg = runtime_device_config(display_cfg).get("window", {})
+        return WindowOutput(width=width, height=height, scale=runtime_window_scale(args, display_cfg),
+                            borderless=bool(window_cfg.get("borderless", False)), monitor=window_cfg.get("monitor"),
+                            preview=bool(getattr(args, "window_preview", False)))
     raise ValueError(f"Unsupported output: {output_name}")
 
 
 def _configured_display_for_output(display_cfg: dict, output_name: str) -> dict | None:
-    if output_name not in ("thermalright", "turzx", "eink", "lcd"):
+    if output_name not in DEVICE_OUTPUTS:
         return None
     device_cfg = runtime_device_config(display_cfg)
     displays = device_cfg.get("displays", [])
@@ -516,6 +547,8 @@ def _display_region_size(output_name: str, rotation: int, display: dict, fallbac
         width, height = 320, 480
     elif output_name == "lcd":
         width, height = 172, 320
+    elif output_name == "lian_li_usb":
+        width, height = LIAN_LI_LANDSCAPE_SIZE
     else:
         width = int(display.get("width", fallback.get("width", 320)))
         height = int(display.get("height", fallback.get("height", 480)))
@@ -541,7 +574,7 @@ def main() -> int:
     args = build_parser().parse_args()
     load_env(ROOT_DIR / ".env")
     runtime_config = load_runtime_config()
-    raw_display_cfg = load_config(APP_DIR / "config/display.json")["display"]
+    raw_display_cfg = load_display_config()
     plugin = get_plugin(runtime_plugin_name(args, raw_display_cfg))
     plugin_dir = APP_DIR / "plugins" / plugin.name
     use_virtual_displays = not _args_selects_output(args)
@@ -551,8 +584,10 @@ def main() -> int:
     config_watcher = ConfigWatcher(
         lambda: [
             APP_DIR / "config/display.json",
+            APP_DIR / "config/display.local.json",
             APP_DIR / "config/people.json",
             APP_DIR / "config/integrations.json",
+            APP_DIR / "config/integrations.local.json",
             *(APP_DIR / "plugins" / name / "game.json" for name in available_plugins()),
             APP_DIR / "plugins/pokemon/pokemon.json",
             APP_DIR / "plugins/pokemon/companions.json",
@@ -596,6 +631,7 @@ def main() -> int:
         current_people_cfg = load_config(APP_DIR / "config/people.json")["people"]
         current_plugin_cfg = plugin.load_config(plugin_dir, load_config)
         current_events_cfg = plugin.event_config(current_plugin_cfg)
+        current_mock_enabled = env_bool("PIXEL_OPS_MOCK_EVENTS", bool(current_events_cfg.get("mock_events", False)))
         current_calendar_enabled = any(name in integration_runtime.loaded_plugins for name in ("ics", "google_calendar"))
         calendar_cache = {
             "next_checked_at": None,
@@ -608,14 +644,14 @@ def main() -> int:
             checked_at = calendar_cache["next_checked_at"]
             if checked_at is None or (now - checked_at).total_seconds() >= 30:
                 calendar_cache["next_checked_at"] = now
-                calendar_cache["next_value"] = next_event(now, integration_runtime.calendar_paths, current_calendar_enabled)
+                calendar_cache["next_value"] = next_event(now, integration_runtime.calendar_paths, current_calendar_enabled) if current_calendar_enabled or current_mock_enabled else None
             return calendar_cache["next_value"]
 
         def cached_today_events(now):
             checked_at = calendar_cache["today_checked_at"]
             if checked_at is None or checked_at.date() != now.date() or (now - checked_at).total_seconds() >= 30:
                 calendar_cache["today_checked_at"] = now
-                calendar_cache["today_value"] = today_events(now, integration_runtime.calendar_paths, current_calendar_enabled)
+                calendar_cache["today_value"] = today_events(now, integration_runtime.calendar_paths, current_calendar_enabled) if current_calendar_enabled or current_mock_enabled else []
             return calendar_cache["today_value"]
 
         current_event_sources = [
@@ -673,12 +709,11 @@ def main() -> int:
                 y = int(region.get("y", 0))
                 box = (x, y, x + target_width, y + target_height) if multi_display else (0, 0, target_width, target_height)
                 target_output = CroppedOutput(target_output, box, rotation=rotation)
-            target_name = str(runtime_device_config(current_display_cfg).get("output") or target_output_name)
-            targets.append(RuntimeTarget(target_name, current_display_cfg, target_width, target_height, target_output_name, target_output))
+            targets.append(RuntimeTarget(target_output_name, current_display_cfg, target_width, target_height, target_output_name, target_output))
         return targets
 
     def build_runtime_state() -> RuntimeState:
-        current_raw_display_cfg = load_config(APP_DIR / "config/display.json")["display"]
+        current_raw_display_cfg = load_display_config()
         current_display_cfg = virtual_display_config(current_raw_display_cfg) if use_virtual_displays else runtime_display_config(args, current_raw_display_cfg)
         target_width = int(current_display_cfg["width"])
         target_height = int(current_display_cfg["height"])
@@ -693,6 +728,25 @@ def main() -> int:
         )
 
     runtime_state = build_runtime_state()
+    browser_output = None
+    browser_cfg = raw_display_cfg.get("kraken_web", {})
+    if browser_cfg.get("enabled") and any(target.output_name not in ("gif", "preview") for target in runtime_state.targets):
+        browser_output = BrowserOutputServer(
+            {"kraken": APP_DIR / "web/kraken"}, port=int(browser_cfg.get("port", 8767)),
+            assets={"/kraken/pixel.ttf": APP_DIR / "assets/fonts/BoutiqueBitmap9x9/BoutiqueBitmap9x9_Bold_1.92.ttf"},
+        )
+        try:
+            browser_output.start()
+            print(f"[pixel-ops browser] Kraken URL http://127.0.0.1:{browser_output.port}/kraken/", file=sys.stderr)
+        except OSError as error:
+            print(f"[pixel-ops browser] unavailable: {error}", file=sys.stderr)
+            browser_output = None
+
+    def render_runtime_frame(now):
+        frame = runtime_state.app.render_frame(now)
+        if browser_output:
+            browser_output.publish(runtime_state.app.browser_views())
+        return frame
     control_cfg = raw_display_cfg.get("screen_control", {})
     control_cfg = control_cfg if isinstance(control_cfg, dict) else {}
     screen_control = ScreenControlServer(
@@ -784,7 +838,7 @@ def main() -> int:
             start_target(target)
         if len(runtime_state.targets) == 1 and runtime_state.targets[0].output_name == "preview" and not runtime_preview_sequence(args, display_cfg):
             now = datetime.now(ZoneInfo(primary_tz))
-            send_frame(runtime_state.targets[0], runtime_state.app.render_frame(now))
+            send_frame(runtime_state.targets[0], render_runtime_frame(now))
             return 0
 
         frame_delay = 1 / fps
@@ -801,7 +855,7 @@ def main() -> int:
                 else:
                     target_splash_frames = splash_frame_count(runtime_state.display_cfg, fps) if splash_frame is not None else 0
                     now = started + timedelta(seconds=(frame_index - target_splash_frames) / fps)
-                    send_frame(target, runtime_state.app.render_frame(now))
+                    send_frame(target, render_runtime_frame(now))
             return 0
 
         if splash_frame_limit > 0:
@@ -823,7 +877,7 @@ def main() -> int:
             loop_started = time.perf_counter()
             runtime_state = maybe_reload_runtime(runtime_state)
             now = datetime.now(ZoneInfo(primary_tz))
-            frame = runtime_state.app.render_frame(now)
+            frame = render_runtime_frame(now)
             for target in runtime_state.targets:
                 send_frame(target, frame)
             elapsed = time.perf_counter() - loop_started
@@ -833,6 +887,8 @@ def main() -> int:
         print(error, file=sys.stderr)
         return 1
     finally:
+        if browser_output:
+            browser_output.close()
         screen_control.close()
         integration_runtime.close()
         runtime_state.app.close()

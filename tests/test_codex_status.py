@@ -17,6 +17,11 @@ from pixel_ops.render.hud import draw_codex_status_panel
 class CodexStatusTests(TestCase):
     def setUp(self):
         self.now = datetime.now(timezone.utc)
+        # These protocol tests mock sockets and must also run on Windows builds
+        # that do not expose AF_UNIX.
+        unix_family = patch('pixel_ops.data_sources.codex_status.socket.AF_UNIX', 1, create=True)
+        unix_family.start()
+        self.addCleanup(unix_family.stop)
 
     def test_lifecycle_and_attention(self):
         self.assertEqual(thread_activity({'type': 'active'}), ('processing', 'running'))

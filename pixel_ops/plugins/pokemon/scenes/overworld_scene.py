@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 from collections import deque
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from pixel_ops.plugins.ai.plugin import AiDecisionPlugin
 from pixel_ops.plugins.pokemon.game.encounter_system import EncounterSystem
 from pixel_ops.plugins.pokemon.game.mood_engine import MoodEngine
 from pixel_ops.plugins.pokemon.game.map_routes import MapArea, MapRouteManager
+from pixel_ops.plugins.pokemon.game.navigation import WanderNavigator
 from pixel_ops.plugins.pokemon.game.pokemon_selector import PokemonSelector
 from pixel_ops.plugins.pokemon.game.state_machine import GamePhase, GameStateMachine
 from pixel_ops.plugins.pokemon.game.world import World
@@ -47,9 +49,7 @@ from pixel_ops.plugins.pokemon.render.social_effects import draw_social_world_ef
 from pixel_ops.plugins.pokemon.render.text_box import (
     draw_text_box,
     scroll_line_start,
-    text_box_top_padding,
-    text_box_visible_lines,
-    wrap_text_lines,
+    text_box_layout,
 )
 from pixel_ops.plugins.pokemon.render.tiles import TILE, draw_house, draw_lamp, draw_tree, make_tile
 
@@ -123,16 +123,12 @@ class OverworldScene:
         self.encounter_x = int(cfg.get("encounter_x", 132))
         self.walk_exit_x = int(cfg.get("walk_exit_x", 258))
         self.route_speed_px = float(cfg.get("route_speed_px", 2.6))
-        self.vertical_wander_px = int(cfg.get("vertical_wander_px", 42))
-        self.vertical_wander_frames = max(1, int(float(cfg.get("vertical_wander_seconds", 1.4)) * scene_fps))
-        self.horizontal_wander_frames = max(self.vertical_wander_frames, int(1.8 * scene_fps))
-        self.vertical_wander_speed_px = float(cfg.get("vertical_wander_speed_px", 2.4))
         self.vertical_wander_rng = random.Random(int(cfg.get("vertical_wander_seed", 421)))
-        self._ash_motion_axis = "horizontal"
-        self._ash_motion_until_frame = 0
         self._ash_render_x: float | None = None
         self._ash_render_y: float | None = None
-        self._ash_vertical_target_y: float | None = None
+        self._ash_navigator: WanderNavigator | None = None
+        self._ash_navigation_key = None
+        self._ash_is_moving = False
         self.hud_height = int(cfg.get("hud_height", 72))
         self.text_box_height = int(cfg.get("text_box_height", 76))
         self.static_background = bool(cfg.get("static_background", True))
@@ -153,6 +149,7 @@ class OverworldScene:
             sources=self.event_sources,
             queue_limit=int(cfg.get("events", {}).get("queue_limit", 6)),
             on_event=self.mood_engine.observe,
+            capture_categories=cfg.get("events", {}).get("capture_categories"),
         )
         self.encounter = self.encounter_system.idle_context()
         self.capture_store = capture_store
@@ -310,6 +307,7 @@ class OverworldScene:
         work_events: list[WorkEvent] | None = None,
         crosshero=None,
         ai_activity=None,
+        ai_quota=None,
     ):
         with font_scale_for_canvas(self.renderer.width, self.renderer.height):
             base_now = now or datetime.now(ZoneInfo(self.primary_timezone))
@@ -334,6 +332,7 @@ class OverworldScene:
                 work_events=recent_events,
                 crosshero=crosshero,
                 ai_activity=ai_activity,
+                ai_quota=ai_quota,
             )
 
     def render_full(
@@ -355,6 +354,7 @@ class OverworldScene:
         work_events: list[WorkEvent] | None = None,
         crosshero=None,
         ai_activity=None,
+        ai_quota=None,
     ) -> Image.Image:
         with font_scale_for_canvas(self.renderer.width, self.renderer.height):
             phase = phase or self.state.phase
@@ -378,18 +378,65 @@ class OverworldScene:
                 work_events=work_events,
                 crosshero=crosshero,
                 ai_activity=ai_activity,
+                ai_quota=ai_quota,
             )
             if self._presentation_has("game"):
                 if self._is_battle_phase(phase):
                     self._draw_battle_scene(img, phase, pal)
                 else:
                     self._draw_sprites(img, phase, pal)
+                    self._zoom_world_view(img)
             if self._presentation_has("text_box"):
                 message = self._display_message(self.encounter.message_for(phase))
                 draw_text_box(img, self.text_box, message, pal, self._text_frame(message))
             if self.scanlines:
                 img = self.renderer.apply_scanlines(img)
             return img
+
+    def _zoom_world_view(self, img: Image.Image) -> None:
+        """Presentation-only camera; keep source movement geometry unchanged."""
+        raw = self.display_layout.get("game", {})
+        requested = int(raw.get("camera_zoom", 1)) if isinstance(raw, dict) else 1
+        area = self.current_map_area
+        if requested <= 1 or area is None:
+            return
+        x0, y0, x1, y1 = self.map_box
+        width, height = x1 - x0, y1 - y0
+        crop_width = area.crop_box[2] - area.crop_box[0]
+        crop_height = area.crop_box[3] - area.crop_box[1]
+        left = max(x0, x0 + (width - crop_width) // 2)
+        top = max(y0, y0 + (height - crop_height) // 2)
+        right = min(x1, x0 + (width - crop_width) // 2 + crop_width)
+        bottom = min(y1, y0 + (height - crop_height) // 2 + crop_height)
+        zoom = max(requested, math.ceil(width / max(1, right - left)), math.ceil(height / max(1, bottom - top)))
+        camera_width, camera_height = max(1, math.ceil(width / zoom)), max(1, math.ceil(height / zoom))
+        sprite_w, sprite_h = getattr(self, "_ash_world_size", (32, 40))
+        actor_x = int(getattr(self, "_ash_render_x", (left + right) // 2)) + sprite_w // 2
+        actor_y = int(getattr(self, "_ash_render_y", (top + bottom) // 2)) + sprite_h // 2
+        camera_key = (getattr(area, "area_id", None), self.map_box, zoom)
+        if getattr(self, "_camera_key", None) != camera_key:
+            self._camera_key = camera_key
+            self._camera_position = (float(actor_x - camera_width // 2), float(actor_y - camera_height // 2))
+            self._camera_frame = None
+        cx, cy = self._camera_position
+        # Let Ash cross the middle of the view before moving the camera. Following
+        # every pixel locks him in place on screen and amplifies small corrections.
+        if getattr(self, "_camera_frame", None) != getattr(self, "frame", 0):
+            self._camera_frame = getattr(self, "frame", 0)
+            for axis, actor, extent in ((0, actor_x, camera_width), (1, actor_y, camera_height)):
+                current = cx if axis == 0 else cy
+                target = min(actor - extent * .3, max(actor - extent * .7, current))
+                change = max(-2.5, min(2.5, (target - current) * .2))
+                if axis == 0:
+                    cx += change
+                else:
+                    cy += change
+        cx = max(left, min(right - camera_width, cx))
+        cy = max(top, min(bottom - camera_height, cy))
+        self._camera_position = (cx, cy)
+        cx, cy = round(cx), round(cy)
+        camera = img.crop((cx, cy, cx + camera_width, cy + camera_height))
+        img.paste(camera.resize((width, height), Image.Resampling.NEAREST), (x0, y0))
 
     def render_base(
         self,
@@ -408,6 +455,7 @@ class OverworldScene:
         work_events: list[WorkEvent] | None = None,
         crosshero=None,
         ai_activity=None,
+        ai_quota=None,
     ) -> Image.Image:
         with font_scale_for_canvas(self.renderer.width, self.renderer.height):
             base_now = now or datetime.now(ZoneInfo(self.primary_timezone))
@@ -419,7 +467,9 @@ class OverworldScene:
             if self._presentation_has("game"):
                 self._draw_sky(draw, pal)
                 self._draw_world(img, draw, pal, base_now, weather)
-                draw_social_world_effects(img, self.map_box, self.current_mood, self.frame)
+                game_layout = self.display_layout.get("game", {})
+                particles = game_layout.get("ambient_particles", True) if isinstance(game_layout, dict) else True
+                draw_social_world_effects(img, self.map_box, self.current_mood, self.frame, particles=bool(particles))
                 self._draw_movement_debug_overlay(draw, pal)
             draw_hud(
                 draw,
@@ -441,6 +491,7 @@ class OverworldScene:
                 layout_theme=self.layout_theme,
                 crosshero=crosshero,
                 ai_activity=ai_activity,
+                ai_quota=ai_quota,
             )
             self._draw_pokemon_capture_huds(draw, pal)
             return img
@@ -505,6 +556,19 @@ class OverworldScene:
 
     def _draw_pokemon_capture_hud(self, draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], pal) -> None:
         PixelRenderer.draw_panel(draw, box, pal.panel, pal.panel_shadow, pal.ink)
+        if box[2] - box[0] >= 360 and box[3] - box[1] <= 110:
+            x0, y0, x1, _ = box
+            draw.text((x0 + 16, y0 + 10), "LATEST CAPTURE", font=font(15), fill=pal.blue)
+            if not self.captured_pokemon:
+                draw.text((x0 + 16, y0 + 40), "Waiting for a GitHub encounter", font=font(11), fill=pal.ink)
+                return
+            record = self.captured_pokemon[0]
+            _draw_tiny_pokeball(draw, x0 + 16, y0 + 40, 14, pal)
+            name = _fit_text(draw, f"#{record.number:03d} {record.name.upper()}", x1 - x0 - 64, font(13))
+            draw.text((x0 + 40, y0 + 37), name, font=font(13), fill=pal.ink)
+            cause = f"{record.captured_at:%H:%M} / {record.cause}"
+            draw.text((x0 + 16, y0 + 61), _fit_text(draw, cause, x1 - x0 - 32, font(10)), font=font(10), fill=pal.blue)
+            return
         row_font = font(8)
         cause_font = font(7)
         x0, y0, x1, y1 = _draw_panel_title(draw, box, "POKEMON CAUGHT", pal)
@@ -662,25 +726,17 @@ class OverworldScene:
         return "The world feels ambient."
 
     def _text_scroll_start(self, message: str, text_frame: int) -> int:
-        x0, y0, x1, y1 = self.text_box
-        text_x = x0 + scaled_px(12)
-        text_y = y0 + text_box_top_padding()
-        max_lines = text_box_visible_lines(self.text_box, message, text_y=text_y)
         scratch = Image.new("RGB", (1, 1))
         draw = ImageDraw.Draw(scratch)
-        lines = wrap_text_lines(draw, message, font(14), x1 - text_x - scaled_px(26))
+        _, _, lines, max_lines = text_box_layout(draw, self.text_box, message)
         return scroll_line_start(lines, max_lines, text_frame)
 
     def _message_scroll_seconds(self, message: str) -> float:
         if not message:
             return 0.0
-        x0, y0, x1, y1 = self.text_box
-        text_x = x0 + scaled_px(12)
-        text_y = y0 + text_box_top_padding()
-        max_lines = text_box_visible_lines(self.text_box, message, text_y=text_y)
         scratch = Image.new("RGB", (1, 1))
         draw = ImageDraw.Draw(scratch)
-        lines = wrap_text_lines(draw, message, font(14), x1 - text_x - scaled_px(26))
+        _, _, lines, max_lines = text_box_layout(draw, self.text_box, message)
         hidden_lines = max(0, len(lines) - max_lines)
         if hidden_lines == 0:
             return 0.0
@@ -710,7 +766,13 @@ class OverworldScene:
                 draw.ellipse((sun_x1 - sun_size, sun_y0, sun_x1, sun_y0 + sun_size), fill=pal.light, outline=pal.panel_shadow)
 
     def _draw_world(self, img, draw: ImageDraw.ImageDraw, pal, now: datetime, weather: WeatherState | None = None) -> None:
-        area = self.map_routes.area_for_timestamp(now.timestamp())
+        raw = self.display_layout.get("game", {})
+        zoom = int(raw.get("camera_zoom", 1)) if isinstance(raw, dict) else 1
+        minimum = None
+        if zoom > 1:
+            x0, y0, x1, y1 = self.map_box
+            minimum = (math.ceil((x1 - x0) / zoom), math.ceil((y1 - y0) / zoom))
+        area = self.map_routes.area_for_timestamp(now.timestamp(), minimum_crop_size=minimum)
         if area:
             self.current_map_area = area
             self.current_map_timestamp = now.timestamp()
@@ -760,9 +822,6 @@ class OverworldScene:
         self.ash_y = y
         self._ash_render_x = float(x)
         self._ash_render_y = float(y)
-        self._ash_vertical_target_y = None
-        self._ash_motion_axis = "horizontal"
-        self._ash_motion_until_frame = self.frame + self._random_horizontal_frames()
 
     def _reposition_companions_in_walkable_area(self) -> None:
         if not self._voice_companions or not self._movement_screen_rects("companions"):
@@ -990,7 +1049,29 @@ class OverworldScene:
         self._draw_battle_sprites(img, phase)
 
     def _battle_background_for_current_mood(self, pal) -> Image.Image:
-        return apply_battle_ambience(self._battle_background_image(pal), self.current_mood)
+        background = apply_battle_ambience(self._battle_background_image(pal), self.current_mood)
+        # The widescreen keeps PR identity visible through every capture phase.
+        # Put it in the dynamic background so dirty-region restores retain it.
+        if (background.width >= 700 and getattr(self, "_show_pr_identity", True)
+                and self.encounter.event and self.encounter.event.category == EventCategory.PULL_REQUEST):
+            background = background.copy()
+            draw = ImageDraw.Draw(background)
+            width = int(background.width * .6) - 24
+            reference = f"{self.encounter.pr_reference} {self.encounter.pokemon.name.upper()}"
+            size = 14
+            while size > 10 and draw.textlength(reference, font=font(size)) > width - 16:
+                size -= 1
+            if draw.textlength(reference, font=font(size)) > width - 16:
+                suffix = f"#{self.encounter.pr_number}" if self.encounter.pr_number is not None else ""
+                suffix += f" {self.encounter.pokemon.name.upper()}"
+                repository = self.encounter.pr_repository
+                while repository and draw.textlength(repository + "..." + suffix, font=font(size)) > width - 16:
+                    repository = repository[:-1]
+                reference = repository + "..." + suffix
+            draw.rectangle((12, 8, 12 + width, 57), fill=pal.panel, outline=pal.panel_shadow)
+            draw.text((20, 13), "PR ENCOUNTER", font=font(12), fill=(0, 0, 0))
+            draw.text((20, 33), reference, font=font(size), fill=(0, 0, 0))
+        return background
 
     def _battle_background_image(self, pal) -> Image.Image:
         cached = self._battle_backgrounds.get(pal.phase)
@@ -1185,18 +1266,16 @@ class OverworldScene:
         ash_x, route_y, direction = self._ash_pose_for_phase(phase)
         if direction:
             self.ash_direction = direction
-        ash_state = f"walk_{self.ash_direction}" if phase in (GamePhase.WALKING, GamePhase.RESUME_WALKING) else f"idle_{self.ash_direction}"
+        ash_state = f"walk_{self.ash_direction}" if self._ash_is_moving else f"idle_{self.ash_direction}"
         if phase == GamePhase.ASH_THROWS:
             ash_state = "catch"
-        ash = self.ash_sprites.frame(ash_state, self.frame)
-        walking = phase in (GamePhase.WALKING, GamePhase.RESUME_WALKING)
-        step_index = int(self.frame * 6 / max(1, self.scene_fps))
-        ash_y = route_y + (1 if walking and step_index % 2 else 0)
+        ash = self._ash_world_sprite(ash_state)
+        ash_y = route_y
         if ash_streaming:
             self.ash_direction = "down"
             ash_y = route_y
-            ash = self.ash_sprites.frame("idle_down", self.frame)
-        clamped_ash_x, clamped_ash_y = self._clamp_sprite_to_movement(
+            ash = self._ash_world_sprite("idle_down")
+        clamped_ash_x, clamped_ash_y = (ash_x, ash_y) if self._ash_navigator and self._ash_navigator.nodes else self._clamp_sprite_to_movement(
             "ash",
             ash_x,
             ash_y,
@@ -1210,7 +1289,6 @@ class OverworldScene:
             self.ash_y = ash_y
             self._ash_render_x = float(ash_x)
             self._ash_render_y = float(ash_y)
-            self._ash_vertical_target_y = None
         layers.extend(self._voice_companion_layers(ash_x, ash_y, phase, snapshot=snapshot))
         layers.append((ash, ash_x, ash_y, ""))
         if ash_streaming:
@@ -1237,6 +1315,17 @@ class OverworldScene:
                 by = self.pokemon_y + 22
             layers.append((ball, bx, by, ""))
         return layers
+
+    def _ash_world_sprite(self, state: str) -> Image.Image:
+        sprite = self.ash_sprites.frame(state, self.frame)
+        raw = self.display_layout.get("game", {})
+        if self.current_map_area and isinstance(raw, dict) and int(raw.get("camera_zoom", 1)) > 1:
+            # Map pixels are native GBA pixels. The legacy sprites are loaded at
+            # 2x for compact layouts; avoid multiplying that again with the camera.
+            scale = max(1, self.ash_sprites.scale)
+            sprite = sprite.resize((max(1, sprite.width // scale), max(1, sprite.height // scale)), Image.Resampling.NEAREST)
+        self._ash_world_size = sprite.size
+        return sprite
 
     def _draw_sprites(self, img: Image.Image, phase: GamePhase, pal, offset: tuple[int, int] = (0, 0)) -> None:
         ox, oy = offset
@@ -1631,6 +1720,20 @@ class OverworldScene:
         width: int,
         height: int,
     ) -> tuple[int, int, int, int] | None:
+        if actor == "ash":
+            # Ground contact belongs to the feet. Requiring the entire sprite
+            # inside one rectangle rejects narrow paths and adjoining regions.
+            fx, fy = x + width // 2, y + height - 5
+            footprint = (fx - 5, fy - 3, fx + 5, fy + 3)
+            walkable = self._movement_screen_rects(actor)
+            clipped = [(max(a, footprint[0]), max(b, footprint[1]), min(c, footprint[2]), min(d, footprint[3]))
+                       for a, b, c, d in walkable
+                       if a < footprint[2] and c > footprint[0] and b < footprint[3] and d > footprint[1]]
+            if (MapRouteManager._rect_union_area(clipped) == 60
+                    and not self._sprite_intersects_movement_blockers(actor, footprint)):
+                return (min(r[0] for r in walkable), min(r[1] for r in walkable),
+                        max(r[2] for r in walkable), max(r[3] for r in walkable))
+            return None
         for x0, y0, x1, y1 in self._movement_screen_rects(actor):
             sprite_rect = (x, y, x + width, y + height)
             if (
@@ -1832,6 +1935,33 @@ class OverworldScene:
 
     def _ash_pose_for_phase(self, phase: GamePhase) -> tuple[int, int, str | None]:
         moving = phase in (GamePhase.WALKING, GamePhase.RESUME_WALKING)
+        walkable = self._movement_screen_rects("ash")
+        if walkable and self.current_map_area:
+            ash = self._ash_world_sprite("idle_down")
+            blocked = self._movement_screen_rects("ash", "avoid_source_rects") + self._movement_screen_rects("blocked")
+            key = (self.current_map_area.area_id, self.map_box, tuple(walkable), tuple(blocked), ash.size)
+            if self._ash_navigation_key != key:
+                self._ash_navigation_key = key
+                bounds = self._source_rect_to_screen(self.current_map_area.crop_box) or self.map_box
+                self._ash_navigator = WanderNavigator(bounds, walkable, blocked, ash.size, self.vertical_wander_rng)
+                self._ash_navigator.place(
+                    self._ash_render_x if self._ash_render_x is not None else self.encounter_x,
+                    self._ash_render_y if self._ash_render_y is not None else self.ash_y,
+                )
+            navigator = self._ash_navigator
+            if navigator and navigator.nodes:
+                raw = self.display_layout.get("game", {})
+                zoom = max(1, int(raw.get("camera_zoom", 1))) if isinstance(raw, dict) else 1
+                snapshot = self._companion_snapshot()
+                enabled = moving and not bool(getattr(snapshot, "focus_streaming", False))
+                x, y, direction = navigator.pose(self.frame, self.scene_fps, self.route_speed_px / zoom, enabled=enabled)
+                self._ash_is_moving = enabled and navigator.moving
+                self._ash_render_x, self._ash_render_y = float(x), float(y)
+                self.encounter_x, self.ash_y = x, y
+                return x, y, direction
+        self._ash_navigator = None
+        self._ash_navigation_key = None
+        self._ash_is_moving = False
         if moving and self.current_map_area:
             (x, y), direction = self.map_routes.pose_on_route(
                 self.current_map_area,
@@ -1846,69 +1976,28 @@ class OverworldScene:
             return self._moving_ash_pose(x, y, None)
         self._ash_render_x = float(x)
         self._ash_render_y = float(self.ash_y)
-        self._ash_motion_axis = "horizontal"
         return x, self.ash_y, None
 
     def _moving_ash_pose(self, target_x: int, base_y: int, route_direction: str | None) -> tuple[int, int, str | None]:
         if self._ash_render_x is None or self._ash_render_y is None:
             self._ash_render_x = float(target_x)
             self._ash_render_y = float(base_y)
-            self._ash_motion_until_frame = self.frame + self._random_horizontal_frames()
 
-        if self._ash_motion_axis == "vertical":
-            return self._vertical_ash_pose(base_y)
-
-        if self.frame >= self._ash_motion_until_frame and self.vertical_wander_px > 0:
-            self._start_vertical_wander(base_y)
-            return self._vertical_ash_pose(base_y)
-
-        previous_x = self._ash_render_x
+        previous_x, previous_y = self._ash_render_x, self._ash_render_y
         step = max(1.0, self.route_speed_px)
-        self._ash_render_x = self._move_toward(self._ash_render_x, float(target_x), step)
+        if abs(target_x - previous_x) >= abs(base_y - previous_y):
+            self._ash_render_x = self._move_toward(previous_x, float(target_x), step)
+        else:
+            self._ash_render_y = self._move_toward(previous_y, float(base_y), step)
         x_delta = self._ash_render_x - previous_x
+        y_delta = self._ash_render_y - previous_y
+        self._ash_is_moving = abs(x_delta) + abs(y_delta) > .1
         direction = route_direction
         if abs(x_delta) >= 0.5:
             direction = "right" if x_delta > 0 else "left"
-        return int(round(self._ash_render_x)), int(round(self._ash_render_y)), direction
-
-    def _vertical_ash_pose(self, base_y: int) -> tuple[int, int, str | None]:
-        assert self._ash_render_x is not None
-        assert self._ash_render_y is not None
-        if self._ash_vertical_target_y is None:
-            self._start_vertical_wander(base_y)
-        assert self._ash_vertical_target_y is not None
-        previous_y = self._ash_render_y
-        self._ash_render_y = self._move_toward(
-            self._ash_render_y,
-            self._ash_vertical_target_y,
-            self.vertical_wander_speed_px,
-        )
-        reached_target = abs(self._ash_render_y - self._ash_vertical_target_y) < 0.5
-        if reached_target and self.frame >= self._ash_motion_until_frame:
-            self._ash_motion_axis = "horizontal"
-            self._ash_motion_until_frame = self.frame + self._random_horizontal_frames()
-            self._ash_vertical_target_y = None
-        y_delta = self._ash_render_y - previous_y
-        direction = None
-        if abs(y_delta) >= 0.5:
+        elif abs(y_delta) >= .5:
             direction = "down" if y_delta > 0 else "up"
         return int(round(self._ash_render_x)), int(round(self._ash_render_y)), direction
-
-    def _start_vertical_wander(self, base_y: int) -> None:
-        assert self._ash_render_y is not None
-        min_y = self.map_box[1] + 4
-        max_y = self.map_box[3] - 48
-        target = float(base_y + self.vertical_wander_rng.randint(-self.vertical_wander_px, self.vertical_wander_px))
-        target = min(max_y, max(min_y, target))
-        if abs(target - self._ash_render_y) < 8:
-            direction = -1 if self._ash_render_y > (min_y + max_y) / 2 else 1
-            target = min(max_y, max(min_y, self._ash_render_y + direction * min(18, self.vertical_wander_px)))
-        self._ash_motion_axis = "vertical"
-        self._ash_motion_until_frame = self.frame + self.vertical_wander_frames
-        self._ash_vertical_target_y = target
-
-    def _random_horizontal_frames(self) -> int:
-        return self.horizontal_wander_frames + self.vertical_wander_rng.randint(0, max(1, self.scene_fps))
 
     @staticmethod
     def _move_toward(current: float, target: float, step: float) -> float:
@@ -1940,7 +2029,7 @@ def _capture_cause_label(event: WorkEvent | None) -> str:
     base = labels.get(event.category, event.category.value.replace("_", " ").upper())
     if event.category in (EventCategory.MESSAGE_IMPORTANT, EventCategory.SOCIAL_ACTIVITY, EventCategory.SOCIAL_PRESENCE, EventCategory.SOCIAL_QUIET):
         return base
-    context = event.repo or event.metadata.get("repo") or event.title
+    context = event.external_id.split(":", 1)[0] if event.source == "github" and event.external_id else event.repo or event.metadata.get("repo") or event.title
     if not context:
         return base
     return f"{base} {_compact_capture_context(context)}"

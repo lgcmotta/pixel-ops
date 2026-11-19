@@ -38,6 +38,11 @@ import mascotAlertImg from "./assets/pixelops-mascot-angry.png";
 import mascotImg from "./assets/pixelops-mascot.png";
 import mascotSleepyImg from "./assets/pixelops-mascot-sleepy.png";
 import { PixelMascot } from "./components/PixelMascot";
+import { CodexAccountPanel } from "./components/CodexAccountPanel";
+import GoogleCalendarPanel from "./components/GoogleCalendarPanel";
+import { DesktopMonitorPanel } from "./components/DesktopMonitorPanel";
+import { KrakenPanel } from "./components/KrakenPanel";
+import { ShowOffPanel } from "./components/ShowOffPanel";
 import {
   cloneConfig,
   configureKiteSecrets,
@@ -114,6 +119,7 @@ type LayoutThemeDefinition = {
 };
 
 const integrationIcons: Record<string, IconComponent> = {
+  codex_account: Activity,
   github: Github,
   google_calendar: CalendarDays,
   ics: CalendarDays,
@@ -138,6 +144,8 @@ const visualPluginIcons: Record<string, IconComponent> = {
 };
 
 const layoutWindowCatalog: LayoutWindowOption[] = [
+  { kind: "status_strip", label: "Wide Status Strip", tone: "#7fb2e6" },
+  { kind: "pr_activity", label: "PR Activity", tone: "#ef846d" },
   { kind: "clock", label: "Clock", tone: "#7fb2e6" },
   { kind: "media_asset", label: "Media Asset", tone: "#95d7ff" },
   { kind: "timezones", label: "Timezones timeline", tone: "#7fb2e6" },
@@ -525,7 +533,7 @@ export function App() {
   const discordPeople = discordPersonEntries(discordPeopleConfig.people);
   const enabledCount = manifest.integrations.filter(({ key }) => Boolean(integrationConfig(config, key).enabled)).length;
   const activeVisualPlugins = manifest.visualPlugins.filter((plugin) => selectedPluginKeys.includes(plugin.key));
-  const activeIntegrations = manifest.integrations.filter(({ key }) => Boolean(integrationConfig(config, key).enabled));
+  const settingsIntegrations = manifest.integrations.filter(({ key }) => key === "google_calendar" || Boolean(integrationConfig(config, key).enabled));
   const settingsTabs: SettingsTabItem[] = [
     ...activeVisualPlugins.map((plugin) => ({
       key: `plugin:${plugin.key}`,
@@ -533,7 +541,7 @@ export function App() {
       icon: visualPluginIcons[plugin.key] ?? Code2,
       tone: "plugin" as const,
     })),
-    ...activeIntegrations.map((integration) => ({
+    ...settingsIntegrations.map((integration) => ({
       key: `integration:${integration.key}`,
       label: integration.label,
       icon: integrationIcons[integration.key] ?? Bot,
@@ -887,13 +895,18 @@ export function App() {
             <Field label="Output">
               <Select
                 value={display.device.output}
-                options={["window", "preview", "gif", "turzx", "thermalright", "eink", "lcd"]}
+                options={["window", "lian_li_usb", "preview", "gif", "turzx", "thermalright", "eink", "lcd"]}
                 onChange={(value) =>
                   mutate((draft) => {
-                    if (value === "thermalright" || value === "eink" || value === "lcd") {
+                    const currentDisplay = draft.display.display;
+                    if (value === "lian_li_usb" || (value === "window" && currentDisplay.device.output === "lian_li_usb")) {
+                      const outputs = ensureDisplayOutputs(currentDisplay);
+                      outputs[0] = lockDisplayResolution({ ...outputs[0], output: value, target: value });
+                      applyMultiDisplayBounds(currentDisplay);
+                    } else if (value === "thermalright" || value === "eink" || value === "lcd") {
                       applyEquipment(draft, value);
                     } else {
-                      draft.display.display.device.output = value;
+                      currentDisplay.device.output = value;
                     }
                   })
                 }
@@ -905,6 +918,14 @@ export function App() {
             <Field label="Display FPS">
               <NumberInput value={display.fps} onChange={(value) => mutate((draft) => void (draft.display.display.fps = value))} />
             </Field>
+            {display.device.output !== "lian_li_usb" ? (
+              <DesktopMonitorPanel value={display.device.window ?? {}} onChange={(value) => mutate((draft) => void (draft.display.display.device.window = value))} />
+            ) : null}
+            <KrakenPanel value={display.kraken_web ?? {}} onChange={(value) => mutate((draft) => void (draft.display.display.kraken_web = value))} />
+            <ShowOffPanel value={display.show_off ?? {}} onChange={(value) => mutate((draft) => {
+              draft.display.display.show_off = value;
+              if (value.enabled) draft.display.display.device.plugin = "pokemon";
+            })} />
             <Field label="Window scale">
               <NumberInput
                 value={display.device.window_scale}
@@ -1655,6 +1676,7 @@ function DisplayOutputRow({
   const isWindowOutput = normalizeOutputTarget(display.output) === "window";
   const isEinkOutput = normalizeOutputTarget(display.output) === "eink";
   const isLcdOutput = normalizeOutputTarget(display.output) === "lcd";
+  const isLianLiOutput = normalizeOutputTarget(display.output) === "lian_li_usb";
   const isNetworkOutput = isEinkOutput || isLcdOutput;
   const isKnownUsbDisplay = !isWindowOutput && knownUsbDisplay(usbConfig);
   const updateUsbConfig = (patch: Record<string, unknown>) => {
@@ -1675,7 +1697,7 @@ function DisplayOutputRow({
         <TextInput value={display.label} onChange={(value) => onChange({ ...display, label: value })} />
       </Field>
       <Field label="Output">
-        <Select value={display.output} options={["thermalright", "turzx", "eink", "lcd", "window", "preview", "gif"]} onChange={changeOutput} />
+        <Select value={display.output} options={["thermalright", "turzx", "lian_li_usb", "eink", "lcd", "window", "preview", "gif"]} onChange={changeOutput} />
       </Field>
       <Field label="X">
         <NumberInput value={display.x} onChange={(value) => onChange({ ...display, x: value })} />
@@ -1749,7 +1771,17 @@ function DisplayOutputRow({
           </Field>
         </>
       ) : null}
-      {!isWindowOutput && !isNetworkOutput ? (
+      {isLianLiOutput ? (
+        <>
+          <Field label="USB serial (optional)">
+            <TextInput value={display.lian_li_usb?.serial_number ?? ""} onChange={(serial_number) => onChange({ ...display, lian_li_usb: { ...display.lian_li_usb, serial_number } })} />
+          </Field>
+          <Field label="Border color (RGB hex)">
+            <TextInput value={display.lian_li_usb?.border_color ?? ""} onChange={(border_color) => onChange({ ...display, lian_li_usb: { ...display.lian_li_usb, border_color } })} />
+          </Field>
+        </>
+      ) : null}
+      {!isWindowOutput && !isNetworkOutput && !isLianLiOutput ? (
         <>
           <Field label="USB VID">
             <TextInput disabled={isKnownUsbDisplay} value={usbConfig.vid ?? (usbTarget === "turzx" ? "0x1a86" : "0x0416")} onChange={(value) => updateUsbConfig({ vid: value })} />
@@ -2306,6 +2338,14 @@ function IntegrationPanel({
     );
   }
 
+  if (activeKey === "codex_account") {
+    return <Panel title="Codex Account" icon={Activity} subtitle="Account-wide quota and reset windows">
+      <CodexAccountPanel />
+      <Field label="Codex executable"><TextInput value={config.integrations.integrations.codex_account.executable} onChange={value => onMutate(draft => void (draft.integrations.integrations.codex_account.executable = value || "codex"))} /></Field>
+      <span className="empty-note">Save configuration before connecting after changing the executable. Account quota does not use an OpenAI API key.</span>
+    </Panel>;
+  }
+
   if (activeKey === "crosshero") {
     const crosshero = config.integrations.integrations.crosshero;
     return (
@@ -2433,7 +2473,7 @@ function IntegrationPanel({
         </Field>
         <div className="field field-wide">
           <span>Available fields</span>
-          <span className="empty-note">cpu, ram, top_ram_app, temperature, gpu, disk, uptime, battery, load</span>
+          <span className="empty-note">cpu, ram, top_ram_app, temperature, gpu, gpu_usage, gpu_temperature, vram, disk, uptime, battery, load</span>
         </div>
       </Panel>
     );
@@ -2675,13 +2715,19 @@ function IntegrationPanel({
 
   if (activeKey === "google_calendar") {
     return (
-      <Panel title="Google Calendar" icon={CalendarDays} subtitle="Meeting encounters from shared ICS URLs">
-        <Field label="Google ICS URLs">
+      <Panel title="Google Calendar" icon={CalendarDays} subtitle="Google sign-in and shared calendar selection">
+        <Field label="Connection mode">
+          <Select value={config.integrations.integrations.google_calendar.mode || "ics"} options={["oauth", "ics"]} onChange={value => onMutate(draft => { draft.integrations.integrations.google_calendar.mode = value as "oauth" | "ics"; })} />
+        </Field>
+        {config.integrations.integrations.google_calendar.mode === "oauth" ? <GoogleCalendarPanel selected={config.integrations.integrations.google_calendar.calendar_ids || []} onSelect={ids => onMutate(draft => {
+          draft.integrations.integrations.google_calendar.calendar_ids = ids;
+          draft.integrations.integrations.google_calendar.enabled = ids.length > 0;
+        })} /> : <Field label="Google ICS URLs">
           <TextArea
             value={config.integrations.integrations.google_calendar.ics_urls.join("\n")}
             onChange={(value) => onMutate((draft) => void (draft.integrations.integrations.google_calendar.ics_urls = lines(value)))}
           />
-        </Field>
+        </Field>}
       </Panel>
     );
   }
@@ -3341,6 +3387,8 @@ function GithubIntegrationPanel({ config, onMutate }: { config: RuntimeConfig; o
         </div>
       ) : null}
       <Field label="Repos">
+        <label><input type="checkbox" checked={Boolean(github.include_owned)} onChange={event => onMutate(draft => void (draft.integrations.integrations.github.include_owned = event.target.checked))} /> Include all accessible repositories I own</label>
+        <span className="empty-note">The list below adds selected organization or external repositories. Draft and non-draft PRs both participate.</span>
         <TextArea
           value={github.repos.join("\n")}
           onChange={(value) => onMutate((draft) => void (draft.integrations.integrations.github.repos = lines(value)))}
@@ -4187,6 +4235,7 @@ function clampMovementRect(rect: MovementRect, width: number, height: number): M
 function ensureConfigDefaults(config: RuntimeConfig): RuntimeConfig {
   const next = cloneConfig(config);
   const display = next.display.display;
+  next.integrations.integrations.codex_account = Object.assign({ enabled: false, account_home: "", executable: "codex", poll_seconds: 60, timeout_seconds: 15, stale_seconds: 180 }, next.integrations.integrations.codex_account);
   display.device = display.device ?? {
     plugin: "pokemon",
     target: "window",
@@ -4564,7 +4613,7 @@ function defaultLcdDeviceConfig(): NonNullable<DisplayOutputConfig["lcd"]> {
 
 function displayOutputFromConfig(display: RuntimeConfig["display"]["display"], index = 1): DisplayOutputConfig {
   const output = normalizeOutputTarget(display.device.output || display.device.target || "window");
-  const resolution = lockedDisplayResolution(output);
+  const resolution = lockedDisplayResolution(output, 0, display.width, display.height);
   return {
     id: `display-${index}`,
     label: `Display ${index}`,
@@ -4586,6 +4635,7 @@ function displayOutputFromConfig(display: RuntimeConfig["display"]["display"], i
     turzx: display.device.turzx ? { ...defaultTurzxDeviceConfig(), ...display.device.turzx } : defaultTurzxDeviceConfig(),
     eink: { ...defaultEinkDeviceConfig(), ...(display.device.eink ?? {}) },
     lcd: { ...defaultLcdDeviceConfig(), ...(display.device.lcd ?? {}) },
+    lian_li_usb: display.device.lian_li_usb,
   };
 }
 
@@ -4617,6 +4667,7 @@ function normalizeDisplayOutput(raw: Partial<DisplayOutputConfig>, index: number
     turzx: { ...defaultTurzxDeviceConfig(), ...(raw.turzx ?? {}) },
     eink: { ...defaultEinkDeviceConfig(), ...(raw.eink ?? {}) },
     lcd: { ...defaultLcdDeviceConfig(), ...(raw.lcd ?? {}) },
+    lian_li_usb: raw.lian_li_usb,
   };
 }
 
@@ -4633,7 +4684,7 @@ function newDisplayOutput(index: number, displays: DisplayOutputConfig[], reques
   const rightEdge = displays.length ? Math.max(...displays.map((item) => item.x + item.width)) : 0;
   return {
     id: `display-${Date.now().toString(36)}-${index}`,
-    label: output === "eink" ? "Heltec E213" : output === "lcd" ? "ESP32-C6 LCD 1.47" : `Display ${index}`,
+    label: output === "eink" ? "Heltec E213" : output === "lcd" ? "ESP32-C6 LCD 1.47" : output === "lian_li_usb" ? "Lian Li US88v1" : `Display ${index}`,
     enabled: true,
     target: output,
     output,
@@ -4655,6 +4706,9 @@ function newDisplayOutput(index: number, displays: DisplayOutputConfig[], reques
 }
 
 function newDisplayOutputFromUsbDevice(index: number, displays: DisplayOutputConfig[], device: UsbDeviceCandidate): DisplayOutputConfig {
+  if (device.target === "lian_li_usb") {
+    return { ...newDisplayOutput(index, displays, device.target), lian_li_usb: { serial_number: device.serial_number } };
+  }
   const target = normalizeUsbTarget(device.target);
   const resolution = lockedDisplayResolution(target, 0);
   const base: DisplayOutputConfig = {
@@ -4691,8 +4745,9 @@ function normalizeUsbTarget(value: string | undefined): "thermalright" | "turzx"
   return value === "turzx" ? "turzx" : "thermalright";
 }
 
-function normalizeOutputTarget(value: string): "thermalright" | "turzx" | "eink" | "lcd" | "window" | "preview" | "gif" {
+function normalizeOutputTarget(value: string): "thermalright" | "turzx" | "eink" | "lcd" | "window" | "preview" | "gif" | "lian_li_usb" {
   if (value === "display") return "turzx";
+  if (value === "lian_li_usb") return value;
   if (value === "turzx" || value === "eink" || value === "e-ink" || value === "eink_http" || value === "lcd" || value === "lcd_http" || value === "tft" || value === "window" || value === "preview" || value === "gif") {
     if (value === "lcd_http" || value === "tft") return "lcd";
     return value === "e-ink" || value === "eink_http" ? "eink" : value;
@@ -4708,7 +4763,11 @@ function lockedDisplayResolution(output: string, rotation: unknown = 0, fallback
       height: Math.max(1, Number(fallbackHeight ?? 480)),
     };
   }
-  const native = target === "thermalright" ? { width: 1920, height: 462 } : target === "eink" ? { width: 250, height: 122 } : target === "lcd" ? { width: 172, height: 320 } : { width: 320, height: 480 };
+  const native = target === "lian_li_usb" ? { width: 1920, height: 480 }
+    : target === "thermalright" ? { width: 1920, height: 462 }
+    : target === "eink" ? { width: 250, height: 122 }
+    : target === "lcd" ? { width: 172, height: 320 }
+    : { width: 320, height: 480 };
   const displayRotation = normalizeDisplayRotation(rotation);
   if (displayRotation === 90 || displayRotation === 270) {
     return { width: native.height, height: native.width };
@@ -4785,6 +4844,8 @@ function snapshotLayoutProfile(display: RuntimeConfig["display"]["display"], lab
     device: {
       target: display.device.target,
       output: display.device.output,
+      window_scale: display.device.window_scale,
+      window: display.device.window ? cloneJson(display.device.window) : undefined,
       displays: cloneJson(displays),
     },
     layout: cloneJson(display.layout),
@@ -4796,6 +4857,8 @@ function restoreLayoutProfile(display: RuntimeConfig["display"]["display"], prof
   display.device.displays = cloneJson(profile.device.displays).map((item, index) => normalizeDisplayOutput(item, index + 1));
   display.device.target = profile.device.target;
   display.device.output = profile.device.output;
+  display.device.window_scale = profile.device.window_scale ?? display.device.window_scale;
+  display.device.window = profile.device.window ? cloneJson(profile.device.window) : display.device.window;
   display.layout_theme = layoutThemeCatalog[profile.layout_theme ?? "default"] ? (profile.layout_theme ?? "default") : "default";
   applyMultiDisplayBounds(display);
   display.width = profile.width;

@@ -91,17 +91,19 @@
       "deployment_workflows": [],
       "startup_lookback_seconds": 3600,
       "timeout_seconds": 20,
-      "client_id": "Iv23litC8XR0gzcGAiaG"
+      "client_id": "Iv23litC8XR0gzcGAiaG",
+      "include_owned": false,
+      "discovery_seconds": 900
     },
     "google_calendar": {
-      "enabled": true,
+      "enabled": false,
       "calendar_id": "primary",
       "credentials_path": "custom/pokemon_timezone_dashboard/secrets/google-oauth-client.json",
       "token_path": "custom/pokemon_timezone_dashboard/secrets/google-token.json",
-      "ics_urls": [
-        "https://calendar.google.com/calendar/ical/marcelo%40thefitnessdoctor.com/private-75d861cb4819d4f606aa4d658a3e7b2b/basic.ics"
-      ],
-      "poll_seconds": 120
+      "ics_urls": [],
+      "poll_seconds": 120,
+      "mode": "oauth",
+      "calendar_ids": []
     },
     "ics": {
       "enabled": true,
@@ -236,6 +238,14 @@
       "thread_id": "",
       "poll_seconds": 1,
       "timeout_seconds": 4
+    },
+    "codex_account": {
+      "enabled": false,
+      "account_home": "pixel_ops/cache/codex_account",
+      "executable": "codex",
+      "poll_seconds": 60,
+      "timeout_seconds": 15,
+      "stale_seconds": 180
     }
   }
 }

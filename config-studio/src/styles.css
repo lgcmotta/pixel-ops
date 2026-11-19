@@ -426,6 +426,19 @@ main {
   grid-column: 1 / -1;
 }
 
+.calendar-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.calendar-choice input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+}
+
 input,
 select,
 textarea {

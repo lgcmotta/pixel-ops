@@ -155,6 +155,12 @@ export type DisplayOutputConfig = {
     address?: number | null;
     timeout_ms?: number;
   };
+  lian_li_usb?: {
+    serial_number?: string;
+    jpeg_quality?: number;
+    timeout_ms?: number;
+    border_color?: string;
+  };
   eink?: {
     url: string;
     token?: string;
@@ -195,6 +201,8 @@ export type LayoutProfileConfig = {
   height: number;
   layout_theme?: string;
   device: {
+    window_scale?: number;
+    window?: { borderless?: boolean; monitor?: number | null };
     target: string;
     output: string;
     displays: DisplayOutputConfig[];
@@ -293,6 +301,7 @@ export type RuntimeConfig = {
         target: string;
         output: string;
         window_scale: number;
+        window?: { borderless?: boolean; monitor?: number | null };
         seconds: number;
         forever: boolean;
         preview_sequence: boolean;
@@ -331,6 +340,7 @@ export type RuntimeConfig = {
         };
         eink?: DisplayOutputConfig["eink"];
         lcd?: DisplayOutputConfig["lcd"];
+        lian_li_usb?: DisplayOutputConfig["lian_li_usb"];
         displays?: DisplayOutputConfig[];
       };
       layout: Record<LayoutKey, LayoutBox>;
@@ -346,6 +356,13 @@ export type RuntimeConfig = {
       screen_control?: {
         port?: number;
       };
+      kraken_web?: {
+        enabled?: boolean;
+        port?: number;
+        pr_battles?: boolean;
+        meeting_countdown?: boolean;
+      };
+      show_off?: { enabled?: boolean; run_id?: string; owner?: string; repositories?: string[] };
       backend: string;
       fps: number;
       preview_output: string;
@@ -432,6 +449,8 @@ export type RuntimeConfig = {
         timeout_seconds: number;
       };
       github: IntegrationToggle & {
+        include_owned?: boolean;
+        discovery_seconds?: number;
         client_id: string;
         token_env: string;
         repos: string[];
@@ -444,6 +463,8 @@ export type RuntimeConfig = {
         timeout_seconds: number;
       };
       google_calendar: IntegrationToggle & {
+        mode?: "oauth" | "ics";
+        calendar_ids?: string[];
         calendar_id: string;
         credentials_path: string;
         token_path: string;
@@ -471,6 +492,13 @@ export type RuntimeConfig = {
         openai_api_monthly_budget_usd: number;
         thresholds: number[];
         timeout_seconds: number;
+      };
+      codex_account: IntegrationToggle & {
+        account_home: string;
+        executable: string;
+        poll_seconds: number;
+        timeout_seconds: number;
+        stale_seconds: number;
       };
       codex_status: IntegrationToggle & {
         socket_path: string;
@@ -614,6 +642,7 @@ export type LayoutWindowOption = {
 };
 
 export type LayoutBox = {
+  camera_zoom?: number;
   kind?: string;
   monochrome?: boolean;
   clock_mode?: "digital" | "analog";

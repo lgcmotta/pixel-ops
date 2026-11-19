@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import sqlite3
 import secrets
 import hashlib
@@ -164,11 +166,16 @@ class SpaceshipStateStore:
             (self.profile_id, resource, int(amount)),
         )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _ensure_profile(self, layout_seed: int | str | None) -> None:
         now = datetime.now(timezone.utc).isoformat()

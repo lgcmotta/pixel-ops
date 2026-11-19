@@ -5,6 +5,7 @@ from datetime import datetime
 from PIL import Image
 
 from pixel_ops.data_sources.companions import CompanionSnapshot, calendar_companion_snapshot, merge_companion_snapshots
+from pixel_ops.data_sources.ai_quota import AIQuotaSnapshot
 from pixel_ops.data_sources.gamification import GamificationSource
 from pixel_ops.data_sources.timezones import build_people_times
 from pixel_ops.events.base import WorkEvent
@@ -17,26 +18,50 @@ class PokemonEngine:
 
     name = "pokemon"
 
-    def __init__(self, scene: OverworldScene, people_config: list[dict], gamification: GamificationSource | None = None):
+    def __init__(self, scene: OverworldScene, people_config: list[dict], gamification: GamificationSource | None = None, kraken_settings: dict | None = None, show_off_settings: dict | None = None):
         self.scene = scene
         self.people_config = people_config
         self.gamification_source = gamification
         self.now: datetime | None = None
         self.values: dict[str, object] = {}
+        self.quota_accounts: dict[str, AIQuotaSnapshot] = {}
+        from pixel_ops.plugins.pokemon.kraken import KrakenProjection
+        self.kraken = KrakenProjection(kraken_settings or {}) if (kraken_settings or {}).get("enabled") else None
+        from pixel_ops.plugins.pokemon.show_off import ShowOffScenario
+        self.show_off = ShowOffScenario(show_off_settings) if (show_off_settings or {}).get("enabled") else None
+        if self.show_off:
+            self.people_config = []
+
+    def browser_views(self):
+        if self.kraken is None or self.now is None:
+            return {}
+        return {"kraken": self.kraken.view(self.scene, self.values, self.now)}
 
     def consume(self, event: PixelOpsEvent | WorkEvent) -> None:
         if isinstance(event, WorkEvent):
+            if self.show_off:
+                return
             self.scene.encounter_system.enqueue(event)
             return
         if event.type == "runtime.tick":
             self.now = event.occurred_at
+            if self.show_off:
+                self.show_off.tick(self.scene, self.values, self.now)
             return
+        if self.show_off:
+            if event.type == "github.pull_requests_updated":
+                self.show_off.update_pull_requests(event.payload.get("value") or [])
+                return
+            if event.type not in ("system.metrics_updated", "ai.quota_updated"):
+                return
         if event.type == "people.updated":
             value = event.payload.get("value")
             if isinstance(value, list):
                 self.people_config = value
             return
         value = event.payload.get("value")
+        if event.type == "ai.quota_updated" and isinstance(value, AIQuotaSnapshot):
+            self.quota_accounts[value.provider] = value
         if event.type == "social.companions_updated" and isinstance(value, CompanionSnapshot):
             current = self.values.get(event.type)
             if isinstance(current, CompanionSnapshot) and current is not value:
@@ -79,6 +104,7 @@ class PokemonEngine:
             gamification=gamification,
             crosshero=self.values.get("fitness.crosshero_day_updated"),
             ai_activity=self.values.get("ai.activity_updated"),
+            ai_quota=tuple(self.quota_accounts.values()) or self.values.get("ai.quota_updated"),
         )
 
     def set_presentation(self, layout: dict, layout_theme: str) -> None:

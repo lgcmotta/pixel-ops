@@ -5,6 +5,7 @@ from datetime import datetime
 from PIL import Image
 
 from pixel_ops.core.game import GameEngine
+from pixel_ops.core.browser_view import BrowserView
 from pixel_ops.events.base import EventSource
 from pixel_ops.events.platform import PixelOpsEvent
 from pixel_ops.core.screens import ScreenRotationController
@@ -40,6 +41,11 @@ class PixelOpsApp:
 
     def add_engine(self, engine: GameEngine) -> None:
         self.engines[engine.name] = engine
+
+    def browser_views(self) -> dict[str, BrowserView]:
+        """Optional presentation extension; core never interprets game state."""
+        provider = getattr(self.engine, "browser_views", None)
+        return dict(provider()) if callable(provider) else {}
 
     def close(self) -> None:
         for engine in self.engines.values():

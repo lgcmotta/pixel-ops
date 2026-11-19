@@ -12,6 +12,7 @@ from pixel_ops.integration_plugins.base import (
 
 
 PLUGIN_MODULES = {
+    "codex_account": "pixel_ops.integrations.codex_account.plugin",
     "kite": "pixel_ops.integrations.kite.plugin",
     "slack": "pixel_ops.integrations.slack.plugin",
     "discord": "pixel_ops.integrations.discord.plugin",
@@ -31,6 +32,7 @@ PLUGIN_MODULES = {
 }
 
 PLUGIN_ENABLES = {
+    "codex_account": "PIXEL_OPS_CODEX_ACCOUNT_ENABLED",
     "kite": "PIXEL_OPS_KITE_ENABLED",
     "slack": "PIXEL_OPS_SLACK_ENABLED",
     "discord": "PIXEL_OPS_DISCORD_ENABLED",

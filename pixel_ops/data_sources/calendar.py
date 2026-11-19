@@ -21,6 +21,8 @@ class CalendarEvent:
     attendees: tuple[str, ...] = ()
     meeting_url: str = ""
     all_day: bool = False
+    calendar_name: str = ""
+    uid: str = ""
 
     def countdown_label(self, now: datetime) -> str:
         remaining = self.starts_at - now
@@ -48,6 +50,7 @@ class _IcsEventComponent:
     attendees: tuple[str, ...]
     meeting_url: str
     all_day: bool
+    calendar_name: str = ""
 
 
 def next_mock_event(now: datetime) -> CalendarEvent:
@@ -101,6 +104,8 @@ def ics_events_between(path: str | Path, start: datetime, end: datetime) -> list
                     attendees=component.attendees,
                     meeting_url=component.meeting_url,
                     all_day=component.all_day,
+                    calendar_name=component.calendar_name,
+                    uid=component.uid,
                 )
             )
     return sorted(events, key=lambda event: (event.starts_at, event.title.lower()))
@@ -123,8 +128,12 @@ def _parse_ics_components(text: str, now: datetime) -> list[_IcsEventComponent]:
     meeting_url = ""
     all_day = False
     in_event = False
+    default_calendar_name = ""
+    calendar_name = ""
     for raw_line in _unfold_ics_lines(text):
         line = raw_line.strip()
+        if not in_event and line.startswith("X-WR-CALNAME:"):
+            default_calendar_name = _clean_ics_text(line.split(":", 1)[1])[:120]
         if line == "BEGIN:VEVENT":
             in_event = True
             title = None
@@ -141,12 +150,15 @@ def _parse_ics_components(text: str, now: datetime) -> list[_IcsEventComponent]:
             attendees = []
             meeting_url = ""
             all_day = False
+            calendar_name = default_calendar_name
             continue
         if not in_event:
             continue
         name = _ics_property_name(line)
         if name == "SUMMARY":
             title = _clean_ics_text(line.split(":", 1)[1])[:80]
+        elif name == "X-PIXEL-OPS-CALENDAR":
+            calendar_name = _clean_ics_text(line.split(":", 1)[1])[:120]
         elif name == "UID":
             uid = line.split(":", 1)[1]
         elif name == "STATUS":
@@ -192,6 +204,7 @@ def _parse_ics_components(text: str, now: datetime) -> list[_IcsEventComponent]:
                         attendees=tuple(attendees[:12]),
                         meeting_url=meeting_url,
                         all_day=all_day,
+                        calendar_name=calendar_name,
                     )
                 )
             in_event = False

@@ -5,6 +5,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
+    "test:account": "esbuild server/codexAccount.test.mjs --bundle --platform=node --format=esm --outfile=../.tools/codex-account-test.mjs && node --test ../.tools/codex-account-test.mjs",
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
@@ -46,6 +47,7 @@
     "asar": false,
     "files": [
       "electron/**/*",
+      "server/**/*",
       "src/**/*",
       "index.html",
       "vite.config.ts",
@@ -59,6 +61,9 @@
         "filter": [
           "pixel_ops/**",
           "!pixel_ops/cache/**",
+          "!pixel_ops/config/discord_people.json",
+          "!pixel_ops/config/display.local.json",
+          "!pixel_ops/config/integrations.local.json",
           "!pixel_ops/output/**",
           "scripts/**",
           "tools/**",

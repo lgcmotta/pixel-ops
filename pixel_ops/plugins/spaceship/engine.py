@@ -102,7 +102,7 @@ class SpaceshipEngine:
         for value in values:
             if not isinstance(value, PullRequestSummary):
                 continue
-            pr_key = f"{value.repo}#{value.number}"
+            pr_key = f"{value.repository or value.repo}#{value.number}"
             self.store.discover_asteroid(
                 pr_key, value.repo, value.number, material_for_pr(pr_key), _asteroid_state(value.review_state), now
             )
