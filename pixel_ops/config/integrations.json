@@ -98,9 +98,7 @@
       "calendar_id": "primary",
       "credentials_path": "custom/pokemon_timezone_dashboard/secrets/google-oauth-client.json",
       "token_path": "custom/pokemon_timezone_dashboard/secrets/google-token.json",
-      "ics_urls": [
-        "https://calendar.google.com/calendar/ical/marcelo%40thefitnessdoctor.com/private-75d861cb4819d4f606aa4d658a3e7b2b/basic.ics"
-      ],
+      "ics_urls": [],
       "poll_seconds": 120
     },
     "ics": {

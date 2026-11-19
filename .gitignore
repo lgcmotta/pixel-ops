@@ -3,7 +3,13 @@ __pycache__/
 *.log
 
 .env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
 .venv/
+.tools/
 venv/
 env/
 node_modules/
@@ -14,14 +20,27 @@ node_modules/
 .ruff_cache/
 
 .DS_Store
+/tmp/
 
-pixel_ops/output/*.png
-pixel_ops/output/*.gif
+pixel_ops/output/
 pixel_ops/cache/
 pixel_ops/state/*.sqlite
 pixel_ops/state/*.sqlite-*
+pixel_ops/config/discord_people.json
+pixel_ops/config/integrations.local.json
 pixel_ops/plugins/*/assets/cache/
+custom/**/secrets/
+.wrangler/
 # PlatformIO build artifacts
 firmware/**/.pio/
 # Local hardware recovery images
 hardware-backups/
+graphify-out/cache/
+graphify-out/20??-??-??/
+graphify-out/.graphify_build_state.json
+graphify-out/.graphify_labels.json
+graphify-out/.graphify_labels.json.sig
+graphify-out/.graphify_labels.pending.json
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/graph.html

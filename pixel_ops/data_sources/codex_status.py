@@ -102,6 +102,8 @@ class CodexStatusSource:
         live app-server transport.
         """
         endpoint = self.codex_dir / "ipc/ipc.sock"
+        if not hasattr(socket, "AF_UNIX"):
+            return {}
         if not endpoint.exists():
             return {}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
@@ -134,6 +136,8 @@ class CodexStatusSource:
         return states
 
     def _server_states(self) -> dict[str, tuple[str, str]] | None:
+        if not hasattr(socket, "AF_UNIX"):
+            return None
         import websocket
 
         raw = None

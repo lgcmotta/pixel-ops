@@ -359,7 +359,10 @@ async function loadRuntimeConfig(selectedPlugins: string[]) {
   const descriptors = await configDescriptorsFor(selectedPlugins);
   const entries = await Promise.all(
     descriptors.map(async (descriptor) => {
-      const raw = await fs.readFile(path.join(repoRoot, descriptor.relativePath), "utf8");
+      const raw = await fs.readFile(path.join(repoRoot, descriptor.relativePath), "utf8").catch(error => {
+        if (descriptor.key === "discord_people" && error.code === "ENOENT") return "{}";
+        throw error;
+      });
       return [descriptor.key, JSON.parse(raw)] as const;
     }),
   );

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -302,11 +304,16 @@ class PixelOpsStateStore:
             ).fetchone()
         return _layout_profile_from_row(row) if row else None
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
