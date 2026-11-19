@@ -650,7 +650,7 @@
     },
     "events": {
       "mock_events": false,
-      "queue_limit": 6,
+      "queue_limit": 256,
       "knowledge_path": "pixel_ops/plugins/pokemon/assets/knowledge/gen1_lore.json",
       "ai_selector": {
         "enabled": true,
@@ -755,7 +755,10 @@
           "electric",
           "psychic"
         ]
-      }
+      },
+      "capture_categories": [
+        "pull_request"
+      ]
     }
   }
 }
