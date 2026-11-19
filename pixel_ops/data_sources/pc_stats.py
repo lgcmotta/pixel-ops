@@ -27,6 +27,9 @@ class PCMetric:
     label: str
     value: str
     status: str = "ok"
+    numeric_value: float | None = None
+    unit: str = ""
+    total: float | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,7 @@ class PCStatsSource:
         self.disk_path = _normalize_disk_path(disk_path or "/")
         self._last_poll_at: datetime | None = None
         self._snapshot: PCStatsSnapshot | None = None
+        self._gpu_sample: dict[str, float | str] = {}
 
     def current(self, now: datetime | None = None) -> PCStatsSnapshot | None:
         if not self.enabled:
@@ -59,6 +63,8 @@ class PCStatsSource:
         if self._last_poll_at and (base_now - self._last_poll_at).total_seconds() < self.poll_seconds:
             return self._snapshot
         self._last_poll_at = base_now
+        if any(field in self.fields for field in ("gpu_usage", "vram", "gpu_temperature")):
+            self._gpu_sample = _nvidia_metrics()
         self._snapshot = PCStatsSnapshot(metrics=tuple(self._metric_for(field) for field in self.fields), observed_at=base_now)
         return self._snapshot
 
@@ -72,6 +78,9 @@ class PCStatsSource:
             "temperature": self._temperature_metric,
             "temp": self._temperature_metric,
             "gpu": self._gpu_metric,
+            "gpu_usage": self._gpu_usage_metric,
+            "gpu_temperature": self._gpu_temperature_metric,
+            "vram": self._vram_metric,
             "disk": self._disk_metric,
             "uptime": self._uptime_metric,
             "battery": self._battery_metric,
@@ -87,8 +96,10 @@ class PCStatsSource:
 
     def _cpu_metric(self) -> PCMetric:
         if psutil is not None:
-            value = float(psutil.cpu_percent(interval=None))
-            return PCMetric("cpu", "CPU", f"{value:.0f}%", _percent_status(value))
+            # Polling uses fresh background threads. psutil's nonblocking
+            # baseline is thread-local and would report zero on every sample.
+            value = float(psutil.cpu_percent(interval=0.1))
+            return PCMetric("cpu", "CPU", f"{value:.0f}%", _percent_status(value), value, "%", 100)
         load = os.getloadavg()[0] if hasattr(os, "getloadavg") else None
         if load is None:
             return PCMetric("cpu", "CPU", "-", "unknown")
@@ -99,10 +110,11 @@ class PCStatsSource:
     def _ram_metric(self) -> PCMetric:
         if psutil is not None:
             memory = psutil.virtual_memory()
-            return PCMetric("ram", "RAM", f"{memory.percent:.0f}%", _percent_status(float(memory.percent)))
+            return PCMetric("ram", "RAM", f"{memory.percent:.0f}%  {_bytes_label(memory.used)} / {_bytes_label(memory.total)}", _percent_status(float(memory.percent)), float(memory.used), "bytes", float(memory.total))
         return PCMetric("ram", "RAM", "-", "unknown")
 
     def _top_ram_app_metric(self) -> PCMetric:
+        best = None
         if psutil is not None:
             best = None
             try:
@@ -161,6 +173,8 @@ class PCStatsSource:
         return PCMetric("temperature", "TEMP", "-", "unknown")
 
     def _gpu_metric(self) -> PCMetric:
+        if self._gpu_sample.get("name"):
+            return PCMetric("gpu", "GPU", str(self._gpu_sample["name"]))
         if platform.system() == "Darwin" and shutil.which("system_profiler"):
             output = _run_command(("system_profiler", "SPDisplaysDataType"))
             for raw in output.splitlines():
@@ -184,6 +198,24 @@ class PCStatsSource:
             if name:
                 return PCMetric("gpu", "GPU", _short_name(name, 14))
         return PCMetric("gpu", "GPU", "-", "unknown")
+
+    def _gpu_usage_metric(self) -> PCMetric:
+        value = self._gpu_sample.get("usage")
+        if not isinstance(value, (int, float)):
+            return PCMetric("gpu_usage", "GPU", "Unavailable", "unknown")
+        return PCMetric("gpu_usage", "GPU", f"{value:.0f}%", _percent_status(value), value, "%", 100)
+
+    def _vram_metric(self) -> PCMetric:
+        used, total = self._gpu_sample.get("used"), self._gpu_sample.get("total")
+        if not isinstance(used, (int, float)) or not isinstance(total, (int, float)) or total <= 0:
+            return PCMetric("vram", "VRAM", "Unavailable", "unknown")
+        return PCMetric("vram", "VRAM", f"{used / 1024:.1f} / {total / 1024:.1f} GB", _percent_status(used / total * 100), used, "MiB", total)
+
+    def _gpu_temperature_metric(self) -> PCMetric:
+        value = self._gpu_sample.get("temperature")
+        if not isinstance(value, (int, float)) or not 0 <= value <= 150:
+            return PCMetric("gpu_temperature", "GPU TEMP", "Unavailable", "unknown")
+        return PCMetric("gpu_temperature", "GPU TEMP", f"{value:.0f}C", "warn" if value >= 85 else "ok", value, "C")
 
     def _disk_metric(self) -> PCMetric:
         if psutil is not None:
@@ -219,9 +251,30 @@ class PCStatsSource:
 
 def _run_command(cmd: tuple[str, ...]) -> str:
     try:
-        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=1.5)
+        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=1.5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def _nvidia_metrics() -> dict[str, float | str]:
+    """One read-only query per sample; unavailable fields stay independent."""
+    binary = shutil.which("nvidia-smi")
+    if not binary:
+        return {}
+    output = _run_command((binary, "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"))
+    for row in csv.reader(io.StringIO(output)):
+        if len(row) not in (4, 5):
+            continue
+        result: dict[str, float | str] = {"name": row[0].strip()}
+        for key, raw in zip(("usage", "used", "total", "temperature"), row[1:]):
+            try:
+                value = float(raw.strip())
+                if value >= 0 and value < float("inf"):
+                    result[key] = value
+            except ValueError:
+                pass
+        return result
+    return {}
 
 
 def _normalize_disk_path(path: str) -> str:
