@@ -11,6 +11,7 @@ import { CodexAccountBridge, PythonAccountBridge, localAccountRequest } from "./
 
 const repoRoot = path.resolve(process.env.PIXEL_OPS_REPO_ROOT || path.resolve(__dirname, ".."));
 const pixelOpsKiteRoot = path.join(repoRoot, "infra/cloudflare/pixelops-kite");
+const localDisplayPath = path.join(repoRoot, "pixel_ops/config/display.local.json");
 const localIntegrationsPath = path.join(repoRoot, "pixel_ops/config/integrations.local.json");
 const privateCalendarKeys = ["calendar_ids", "ics_urls"] as const;
 const execFileAsync = promisify(execFile);
@@ -338,7 +339,7 @@ async function buildConfigManifest() {
   };
 }
 
-async function configDescriptorsFor(selectedPlugins: string[]) {
+async function configDescriptorsFor(selectedPlugins: string[], integrationsConfig: { integrations?: Record<string, { enabled?: boolean }> }) {
   const manifest = await buildConfigManifest();
   const selectedPluginSet = new Set(selectedPlugins);
   const descriptors = [...coreConfigFiles];
@@ -348,14 +349,9 @@ async function configDescriptorsFor(selectedPlugins: string[]) {
     }
   }
 
-  const integrationsPath = coreConfigFiles.find((item) => item.key === "integrations")?.relativePath;
-  if (integrationsPath) {
-    const raw = await fs.readFile(path.join(repoRoot, integrationsPath), "utf8");
-    const integrationsConfig = JSON.parse(raw) as { integrations?: Record<string, { enabled?: boolean }> };
-    for (const integration of manifest.integrations) {
-      if (integrationsConfig.integrations?.[integration.key]?.enabled) {
-        descriptors.push(...integration.configs);
-      }
+  for (const integration of manifest.integrations) {
+    if (integrationsConfig.integrations?.[integration.key]?.enabled) {
+      descriptors.push(...integration.configs);
     }
   }
 
@@ -371,21 +367,33 @@ async function readOptionalConfig(file: string) {
   }
 }
 
+async function readIntegrations(local: boolean) {
+  const privateConfig = local ? await readOptionalConfig(localIntegrationsPath) : {};
+  const config = privateConfig.integrations
+    ? { integrations: privateConfig.integrations }
+    : JSON.parse(await fs.readFile(path.join(repoRoot, "pixel_ops/config/integrations.json"), "utf8"));
+  const calendar = config.integrations?.google_calendar;
+  if (calendar) {
+    for (const key of privateCalendarKeys) {
+      if (Array.isArray(privateConfig.google_calendar?.[key])) calendar[key] = privateConfig.google_calendar[key];
+    }
+  }
+  return config;
+}
+
 async function loadRuntimeConfig(selectedPlugins: string[], local: boolean) {
-  const descriptors = await configDescriptorsFor(selectedPlugins);
+  const integrations = await readIntegrations(local);
+  const descriptors = await configDescriptorsFor(selectedPlugins, integrations);
   const entries = await Promise.all(
     descriptors.map(async (descriptor) => {
       const file = path.join(repoRoot, descriptor.relativePath);
+      if (descriptor.key === "integrations") return [descriptor.key, integrations] as const;
+      if (descriptor.key === "display" && local && await pathExists("pixel_ops/config/display.local.json")) {
+        return [descriptor.key, await readOptionalConfig(localDisplayPath)] as const;
+      }
       const value = descriptor.key === "discord_people"
         ? await readOptionalConfig(file)
         : JSON.parse(await fs.readFile(file, "utf8"));
-      const calendar = descriptor.key === "integrations" ? value.integrations?.google_calendar : undefined;
-      if (calendar && local) {
-        const privateCalendar = (await readOptionalConfig(localIntegrationsPath)).google_calendar;
-        for (const key of privateCalendarKeys) {
-          if (Array.isArray(privateCalendar?.[key])) calendar[key] = privateCalendar[key];
-        }
-      }
       return [descriptor.key, value] as const;
     }),
   );
@@ -407,17 +415,23 @@ async function saveRuntimeConfig(payload: unknown, local: boolean) {
   await Promise.all(
     configFiles.map(async (descriptor) => {
       if (!(descriptor.key in record)) return;
-      const target = path.join(repoRoot, descriptor.relativePath);
+      const target = descriptor.key === "display" && local && await pathExists("pixel_ops/config/display.local.json")
+        ? localDisplayPath
+        : path.join(repoRoot, descriptor.relativePath);
       const value = record[descriptor.key];
       if (descriptor.key === "integrations") {
         const integrations = value as { integrations?: { google_calendar?: Record<string, unknown> } };
         const calendar = integrations.integrations?.google_calendar;
+        const savedLocal = local ? await readOptionalConfig(localIntegrationsPath) : {};
         if (calendar) {
-          const privateCalendar = Object.fromEntries(privateCalendarKeys.map(key => [key, calendar[key] ?? []]));
-          if (local) {
-            await fs.writeFile(localIntegrationsPath, `${JSON.stringify({ google_calendar: privateCalendar }, null, 2)}\n`, { mode: 0o600 });
-          }
+          if (local) savedLocal.google_calendar = Object.fromEntries(privateCalendarKeys.map(key => [key, calendar[key] ?? []]));
           for (const key of privateCalendarKeys) calendar[key] = [];
+        }
+        if (local && (calendar || savedLocal.integrations)) {
+          const localOverride = Boolean(savedLocal.integrations);
+          if (localOverride) savedLocal.integrations = integrations.integrations;
+          await fs.writeFile(localIntegrationsPath, `${JSON.stringify(savedLocal, null, 2)}\n`, { mode: 0o600 });
+          if (localOverride) return;
         }
       }
       await fs.writeFile(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -1787,7 +1801,7 @@ function runtimeConfigApi(): Plugin {
             sendJson(res, 405, { error: "Unsupported account action." });
             return;
           }
-          const saved = JSON.parse(await fs.readFile(path.join(repoRoot, "pixel_ops/config/integrations.json"), "utf8"));
+          const saved = await readIntegrations(true);
           const cfg = saved.integrations?.codex_account || {};
           const settings = JSON.stringify([cfg.account_home || "", cfg.executable || "codex"]);
           if (!accountBridge || settings !== accountBridgeSettings) {

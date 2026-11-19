@@ -1,6 +1,7 @@
 pixel_ops/cache/
 pixel_ops/output/
 pixel_ops/config/discord_people.json
+pixel_ops/config/display.local.json
 pixel_ops/config/integrations.local.json
 custom/**/secrets/
 pixel_ops/plugins/pokemon/assets/

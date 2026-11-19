@@ -62,13 +62,22 @@ def load_config(path: Path) -> dict:
     return load_config_prefer_json(path)
 
 
+def load_display_config() -> dict:
+    path = APP_DIR / "config/display.json"
+    local_path = path.with_name("display.local.json")
+    return load_config(local_path if local_path.exists() else path)["display"]
+
+
 def load_runtime_config() -> dict:
     path = APP_DIR / "config/integrations.json"
     config = load_config(path) if path.exists() else {"integrations": {}}
     private_path = path.with_name("integrations.local.json")
+    private = load_config(private_path) if private_path.exists() else {}
+    if "integrations" in private:
+        config = {"integrations": private["integrations"]}
     google_calendar = config.get("integrations", {}).get("google_calendar")
-    if google_calendar is not None and private_path.exists():
-        local_calendar = load_config(private_path).get("google_calendar", {})
+    if google_calendar is not None:
+        local_calendar = private.get("google_calendar", {})
         for key in ("calendar_ids", "ics_urls"):
             if key in local_calendar:
                 google_calendar[key] = local_calendar[key]
@@ -565,7 +574,7 @@ def main() -> int:
     args = build_parser().parse_args()
     load_env(ROOT_DIR / ".env")
     runtime_config = load_runtime_config()
-    raw_display_cfg = load_config(APP_DIR / "config/display.json")["display"]
+    raw_display_cfg = load_display_config()
     plugin = get_plugin(runtime_plugin_name(args, raw_display_cfg))
     plugin_dir = APP_DIR / "plugins" / plugin.name
     use_virtual_displays = not _args_selects_output(args)
@@ -575,6 +584,7 @@ def main() -> int:
     config_watcher = ConfigWatcher(
         lambda: [
             APP_DIR / "config/display.json",
+            APP_DIR / "config/display.local.json",
             APP_DIR / "config/people.json",
             APP_DIR / "config/integrations.json",
             APP_DIR / "config/integrations.local.json",
@@ -703,7 +713,7 @@ def main() -> int:
         return targets
 
     def build_runtime_state() -> RuntimeState:
-        current_raw_display_cfg = load_config(APP_DIR / "config/display.json")["display"]
+        current_raw_display_cfg = load_display_config()
         current_display_cfg = virtual_display_config(current_raw_display_cfg) if use_virtual_displays else runtime_display_config(args, current_raw_display_cfg)
         target_width = int(current_display_cfg["width"])
         target_height = int(current_display_cfg["height"])
