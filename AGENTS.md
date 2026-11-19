@@ -85,7 +85,8 @@ JSON is the primary runtime config format:
 - `pixel_ops/config/display.json`: display, output paths, timezone, AI provider settings.
 - `pixel_ops/config/people.json`: people and time zones.
 - `pixel_ops/config/integrations.json`: integration enables and non-secret provider settings.
-- `pixel_ops/config/discord_people.json`: recent Discord people captured by the Discord integration.
+- `pixel_ops/config/integrations.local.json`: Git-ignored Google Calendar selections and private ICS URLs.
+- `pixel_ops/config/discord_people.json`: Git-ignored recent Discord people captured by the Discord integration.
 - `pixel_ops/plugins/pokemon/game.json`: Pokemon scene, encounters, event mappings, AI selector throttle.
 - `pixel_ops/plugins/pokemon/pokemon.json`: PokeAPI/cache/sprite settings.
 - `pixel_ops/plugins/pokemon/companions.json`: Pokemon visual mapping for provider-owned companion state.
