@@ -1,5 +1,143 @@
 # Pixel OPs
 
+## Lian Li Windows setup
+
+The 8.8-inch US88v1 supports direct USB output from the signed-in Pixel Ops
+runtime. Stop the current display instance, turn off **Secondary screen** in
+L-Connect 3, and select `lian_li_usb` in the display's **Output** field in Config
+Studio. Save and start the configured runtime. If access to the LCD is denied,
+check whether L-Connect 3 or another display app still owns it. This mode uses
+the existing Windows WinUSB driver and can keep sending frames through Win+L
+while the PC stays awake.
+
+```powershell
+.venv/Scripts/python.exe pixel_ops/main.py --plugin pokemon --output lian_li_usb --forever
+```
+
+For desktop window mode, enable **Secondary screen**, select `window`, and use
+Config Studio's **Detect monitors** control. Auto selection requires a unique
+1920x480 display. Kraken uses the local Pokémon thermal web view through NZXT CAM.
+
+```powershell
+.venv/Scripts/python.exe pixel_ops/main.py --plugin pokemon --output window --forever
+# Normal reduced window for setup, without the secondary display:
+.venv/Scripts/python.exe pixel_ops/main.py --plugin pokemon --output window --window-preview --forever
+```
+
+In Config Studio, open **Codex Account**, select **Sign in with browser**, then
+open the official sign-in link. **Use device code** is the fallback when enabled
+for your account. Codex CLI must be installed; its executable path is configurable.
+Complete authentication yourself. PixelOps uses a separate Git-ignored login at
+`pixel_ops/cache/codex_account`; no API key or macOS helper is required.
+
+The **AI USAGE** HUD displays account-wide remaining percentages and reset times from
+the service, including multiple quota buckets. It polls every 60 seconds and
+marks data stale after three minutes. An elapsed reset waits for fresh service
+data. Optional account token summaries are displayed only when returned; local
+chat totals never establish remaining allowance. Closing Studio does not stop
+runtime collection. Disconnect affects only the PixelOps login.
+
+Each compact provider block shows its window, remaining allowance/reset countdown,
+exact reported account-token total with date when available, and update time.
+Two blocks fit the widescreen panel; additional windows/providers paginate without
+combining their totals. Codex usage stays live during Demo / Show off mode. Other
+account providers can use the same neutral quota observation; connecting Claude
+would still require its own integration.
+
+**PC Stats** uses psutil for CPU/RAM and one nvidia-smi query for GPU
+utilization/VRAM per sample. In **GitHub**, connect your account and enable owned-repository discovery;
+add selected organization/external repositories to the explicit list. Accessible
+draft and non-draft PRs both participate. Credentials stay in the local `.env`.
+The PR panel pages through inventory, including older open PRs. The first scan
+silently establishes a baseline; only new PR creations after that baseline
+trigger captures in this setup. Deduplication survives runtime restarts, edits,
+draft promotion and reopening. Recent unseen PRs can catch up within the one-hour
+startup lookback; older downtime history does not generate a capture backlog.
+Set `ambient_particles` to false in the game layout to disable flashing sparks.
+Restart the runtime after changing credentials or display/monitor settings.
+GitHub's 60-second polling default is a minimum; large repository sets poll less
+frequently to stay within the API budget and honor server rate-limit cooldowns.
+Calendar/weather integrations may be configured separately; they are disabled
+until personalized. Optional AI generation and per-chat Codex monitoring are off.
+
+To keep machine-specific settings out of Git, copy `display.json` to
+`display.local.json` in `pixel_ops/config/`. An optional `integrations` object
+in `integrations.local.json` provides the same kind of override for integrations.
+The runtime and local Config Studio use these files when present.
+
+For Google account sign-in and selection of shared calendars, follow
+[Google Calendar setup](docs/google-calendar-setup.md). A Workspace-owned Cloud
+project can supply the Desktop client while the personal Gmail supplies calendar
+access. The OAuth integration stays disabled until client setup and calendar
+selection are complete.
+
+The widescreen top bar pins the next timed meeting beside the clock in one line:
+**Next: Meeting / HH:MM   Later Today: Meeting / HH:MM**. Both sections use the
+same dark text. **Later today** cycles through the remaining upcoming
+meetings every 10 seconds, excluding the pinned meeting, shared duplicates,
+all-day entries, and meetings that have already started. Times and day boundaries
+use the display timezone. When the next meeting starts, the following one takes
+its place; an empty carousel shows **No more meetings today**.
+
+### NZXT Kraken companion
+
+In Config Studio's Display panel, enable **NZXT Kraken**, save, and restart the
+display. Enter `http://127.0.0.1:8767/kraken/` in NZXT CAM → Web Integration →
+Custom. CAM supplies live CPU/GPU/coolant temperatures; NVIDIA temperature also
+has a fallback through the existing PC Stats sample (`gpu_temperature` field).
+An ordinary browser shows available fallback readings and setup instructions.
+The setup page includes clearly
+labelled sample previews. No public website is needed. Keep CAM running.
+
+The circular view normally shows temperatures. From five minutes before a timed
+meeting until one minute after its start, it shows the name, start time, calendar
+name and countdown. A new-PR Pokémon battle temporarily takes over, sharing the
+primary world's Pokémon and phase clock. Afterwards it returns to the countdown
+if that absolute window is still active, otherwise to temperatures. A small
+temperature strip stays visible during both takeovers. Old PR inventory never
+triggers the mirror. Calendar names populate on the next successful Google refresh.
+
+PR encounter headings include `owner/repository#PR-number POKEMON`, in both live
+and Show off modes. The reference remains visible through the capture on the
+widescreen and Kraken. The PR number is independent of the Pokémon's Pokédex ID.
+
+The runtime serves the page independently of Config Studio and starts with the
+existing PixelOps desktop task. `display.kraken_web` contains `enabled`, `port`
+(default 8767), `pr_battles`, and `meeting_countdown`. Enable/port changes require
+restart; the two takeover switches hot reload. The page adapts to CAM's injected
+dimensions, shape and frame budget, with rendering capped at 30 FPS. If a machine
+restart loads CAM before PixelOps, use CAM's refresh button after PixelOps starts.
+There is no new scheduled task to register.
+
+### Recording a Demo / Show off video
+
+In Config Studio → Display → **Demo / Show off**, click **Start / restart loop**
+and **Save JSON**. Start filming before saving to capture the five-second Kraken
+temperature intro. A five-minute **Standup Meeting** countdown follows. Five
+seconds later a simulated PR triggers the same Pokémon battle on the configured
+views. After the entire capture/resume sequence finishes, the
+countdown gets eight seconds of breathing room before another PR arrives. PRs
+rotate through your repositories, with no overlapping captures or queued backlog.
+
+Near meeting start, new captures pause so the countdown can reach **Starting
+now**. Five seconds after the start, once any capture is finished, Kraken returns
+to temperatures for ten seconds. The loop then restarts automatically with its
+five-second intro, giving fifteen uninterrupted temperature seconds between
+countdowns. The default loop is approximately five minutes twenty seconds. The
+Lian Li's Next and Later Today sections use dummy standup, grooming, planning and
+review meetings. Restart returns to the intro; disabling the mode stops looping.
+
+Real meetings and work activity are hidden. Real PR listings require an explicit
+demo repository owner. Demo captures are never written to normal
+history. CPU/GPU/RAM, CAM temperatures and account quota stay live. Screen rotation
+is paused while Show off is enabled. To return to normal coverage, uncheck the
+mode and **Save JSON**. The setting is `display.show_off` and defaults off. An
+optional local `owner` and list of `repositories` customize the demo inventory.
+
+Validation: `python -m pytest -q`, and in `config-studio`, `npm run build`,
+`npm run lint`, and `npm run test:account`. The browser model tests run with
+`node --test tests/kraken_model.test.mjs` from the repository root.
+
 [![License](https://img.shields.io/github/license/marcelors27/pixel-ops)](LICENSE)
 ![Last commit](https://img.shields.io/github/last-commit/marcelors27/pixel-ops)
 ![Repo size](https://img.shields.io/github/repo-size/marcelors27/pixel-ops)
@@ -61,6 +199,10 @@ python scripts/windows_check.py
 Both checks validate Python dependencies, local system tools, PC stats availability, and expected TURZX USB setup. CI runs Linux and Windows workflows for Python tests, Config Studio build, and offline preview rendering.
 
 ## Config Studio
+
+Windows tray controls and owner-run scheduled-task setup are documented in
+[tools/windows/README.md](tools/windows/README.md). The display task starts at
+sign-in; Studio can run on demand. Stopping Studio leaves the display running.
 
 Config Studio is the local React UI for editing runtime JSON config.
 
