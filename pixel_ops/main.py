@@ -23,6 +23,7 @@ from pixel_ops.integration_plugins.base import IntegrationContext
 from pixel_ops.integration_plugins.registry import build_integration_runtime
 from pixel_ops.outputs.lcd_usb import LcdUsbOutput
 from pixel_ops.outputs.lcd_ble import LcdBleOutput
+from pixel_ops.outputs.lian_li_usb import LANDSCAPE_SIZE as LIAN_LI_LANDSCAPE_SIZE, LianLiUsbOutput
 from pixel_ops.outputs import EInkHttpOutput, GifOutput, LcdHttpOutput, PreviewOutput, TURZXOutput, ThermalrightOutput, WindowOutput
 from pixel_ops.outputs.base import CroppedOutput, DisplayOutput
 from pixel_ops.plugins.ai.plugin import build_ai_plugin
@@ -30,6 +31,8 @@ from pixel_ops.plugins.registry import available_plugins, get_plugin
 from pixel_ops.render.splash import render_splash, splash_frame_count, splash_seconds
 
 APP_DIR = Path(__file__).resolve().parent
+DEVICE_OUTPUTS = ("turzx", "thermalright", "eink", "lcd", "lian_li_usb")
+OUTPUT_TARGETS = ("preview", "gif", *DEVICE_OUTPUTS, "window")
 
 
 @dataclass
@@ -111,10 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pixel OPs timezone dashboard renderer.")
     plugin_names = sorted(available_plugins())
     parser.add_argument("--plugin", choices=plugin_names, help="Interface plugin to render. Defaults to display.device.plugin.")
-    parser.add_argument("--output", choices=("preview", "gif", "turzx", "thermalright", "eink", "lcd", "window"), help="Frame output target.")
+    parser.add_argument("--output", choices=OUTPUT_TARGETS, help="Frame output target.")
     parser.add_argument("--display", action="store_true", help="Send frames to UsbMonitor via USB bulk.")
     parser.add_argument("--window", action="store_true", help="Render frames in a desktop window.")
     parser.add_argument("--window-scale", type=int, help="Desktop window pixel scale.")
+    parser.add_argument("--window-preview", action="store_true", help="Use a normal, reduced desktop window for display setup.")
     parser.add_argument("--preview", action="store_true", help="Render a single PNG preview.")
     parser.add_argument("--gif", action="store_true", help="Render an animated GIF preview.")
     parser.add_argument("--orientation", choices=("vertical", "horizontal"), help="Display layout orientation.")
@@ -224,7 +228,7 @@ def runtime_display_configs(args: argparse.Namespace, display_cfg: dict) -> list
         for item in displays
         if isinstance(item, dict)
         and bool(item.get("enabled", True))
-        and _normalize_output_name(item.get("output") or item.get("target") or device_cfg.get("output") or device_cfg.get("target")) in ("thermalright", "turzx", "eink", "lcd")
+        and _normalize_output_name(item.get("output") or item.get("target") or device_cfg.get("output") or device_cfg.get("target")) in DEVICE_OUTPUTS
     ]
     return configs or [runtime_display_config(args, display_cfg)]
 
@@ -296,6 +300,8 @@ def _display_runtime_config(display_cfg: dict, display: dict) -> dict:
         device_cfg["eink"] = _merged_device_config(device_cfg.get("eink"), display.get("eink"))
     elif output_name == "lcd":
         device_cfg["lcd"] = _merged_device_config(device_cfg.get("lcd"), display.get("lcd"))
+    elif output_name == "lian_li_usb":
+        device_cfg["lian_li_usb"] = _merged_device_config(device_cfg.get("lian_li_usb"), display.get("lian_li_usb"))
     active["device"] = device_cfg
     if display is not None:
         rotation = _normalize_rotation(display.get("rotation", 0))
@@ -370,7 +376,7 @@ def _runtime_output_name(args: argparse.Namespace, display_cfg: dict) -> str:
         return selected_output(args)
     device_cfg = runtime_device_config(display_cfg)
     output = _normalize_output_name(device_cfg.get("output") or device_cfg.get("target") or "preview")
-    if output in ("preview", "gif", "turzx", "thermalright", "eink", "lcd", "window"):
+    if output in OUTPUT_TARGETS:
         return output
     return "preview"
 
@@ -443,13 +449,20 @@ def build_output(
         lcd_cfg = _merged_device_config(runtime_device_config(display_cfg).get("lcd"), display.get("lcd") if display else None)
         output_class = {"usb": LcdUsbOutput, "bluetooth": LcdBleOutput, "http": LcdHttpOutput}[lcd_cfg.get("transport", "http")]
         return output_class.from_config(width, height, lcd_cfg)
+    if output_name == "lian_li_usb":
+        display = None if "display_region" in display_cfg else _configured_display_for_output(display_cfg, output_name)
+        cfg = _merged_device_config(runtime_device_config(display_cfg).get("lian_li_usb"), display.get("lian_li_usb") if display else None)
+        return LianLiUsbOutput.from_config(cfg)
     if output_name == "window":
-        return WindowOutput(width=width, height=height, scale=runtime_window_scale(args, display_cfg))
+        window_cfg = runtime_device_config(display_cfg).get("window", {})
+        return WindowOutput(width=width, height=height, scale=runtime_window_scale(args, display_cfg),
+                            borderless=bool(window_cfg.get("borderless", False)), monitor=window_cfg.get("monitor"),
+                            preview=bool(getattr(args, "window_preview", False)))
     raise ValueError(f"Unsupported output: {output_name}")
 
 
 def _configured_display_for_output(display_cfg: dict, output_name: str) -> dict | None:
-    if output_name not in ("thermalright", "turzx", "eink", "lcd"):
+    if output_name not in DEVICE_OUTPUTS:
         return None
     device_cfg = runtime_device_config(display_cfg)
     displays = device_cfg.get("displays", [])
@@ -524,6 +537,8 @@ def _display_region_size(output_name: str, rotation: int, display: dict, fallbac
         width, height = 320, 480
     elif output_name == "lcd":
         width, height = 172, 320
+    elif output_name == "lian_li_usb":
+        width, height = LIAN_LI_LANDSCAPE_SIZE
     else:
         width = int(display.get("width", fallback.get("width", 320)))
         height = int(display.get("height", fallback.get("height", 480)))
@@ -683,8 +698,7 @@ def main() -> int:
                 y = int(region.get("y", 0))
                 box = (x, y, x + target_width, y + target_height) if multi_display else (0, 0, target_width, target_height)
                 target_output = CroppedOutput(target_output, box, rotation=rotation)
-            target_name = str(runtime_device_config(current_display_cfg).get("output") or target_output_name)
-            targets.append(RuntimeTarget(target_name, current_display_cfg, target_width, target_height, target_output_name, target_output))
+            targets.append(RuntimeTarget(target_output_name, current_display_cfg, target_width, target_height, target_output_name, target_output))
         return targets
 
     def build_runtime_state() -> RuntimeState:
