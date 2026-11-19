@@ -60,7 +60,15 @@ def load_config(path: Path) -> dict:
 
 def load_runtime_config() -> dict:
     path = APP_DIR / "config/integrations.json"
-    return load_config(path) if path.exists() else {"integrations": {}}
+    config = load_config(path) if path.exists() else {"integrations": {}}
+    private_path = path.with_name("integrations.local.json")
+    google_calendar = config.get("integrations", {}).get("google_calendar")
+    if google_calendar is not None and private_path.exists():
+        local_calendar = load_config(private_path).get("google_calendar", {})
+        for key in ("calendar_ids", "ics_urls"):
+            if key in local_calendar:
+                google_calendar[key] = local_calendar[key]
+    return config
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -553,6 +561,7 @@ def main() -> int:
             APP_DIR / "config/display.json",
             APP_DIR / "config/people.json",
             APP_DIR / "config/integrations.json",
+            APP_DIR / "config/integrations.local.json",
             *(APP_DIR / "plugins" / name / "game.json" for name in available_plugins()),
             APP_DIR / "plugins/pokemon/pokemon.json",
             APP_DIR / "plugins/pokemon/companions.json",
@@ -596,6 +605,7 @@ def main() -> int:
         current_people_cfg = load_config(APP_DIR / "config/people.json")["people"]
         current_plugin_cfg = plugin.load_config(plugin_dir, load_config)
         current_events_cfg = plugin.event_config(current_plugin_cfg)
+        current_mock_enabled = env_bool("PIXEL_OPS_MOCK_EVENTS", bool(current_events_cfg.get("mock_events", False)))
         current_calendar_enabled = any(name in integration_runtime.loaded_plugins for name in ("ics", "google_calendar"))
         calendar_cache = {
             "next_checked_at": None,
@@ -608,14 +618,14 @@ def main() -> int:
             checked_at = calendar_cache["next_checked_at"]
             if checked_at is None or (now - checked_at).total_seconds() >= 30:
                 calendar_cache["next_checked_at"] = now
-                calendar_cache["next_value"] = next_event(now, integration_runtime.calendar_paths, current_calendar_enabled)
+                calendar_cache["next_value"] = next_event(now, integration_runtime.calendar_paths, current_calendar_enabled) if current_calendar_enabled or current_mock_enabled else None
             return calendar_cache["next_value"]
 
         def cached_today_events(now):
             checked_at = calendar_cache["today_checked_at"]
             if checked_at is None or checked_at.date() != now.date() or (now - checked_at).total_seconds() >= 30:
                 calendar_cache["today_checked_at"] = now
-                calendar_cache["today_value"] = today_events(now, integration_runtime.calendar_paths, current_calendar_enabled)
+                calendar_cache["today_value"] = today_events(now, integration_runtime.calendar_paths, current_calendar_enabled) if current_calendar_enabled or current_mock_enabled else []
             return calendar_cache["today_value"]
 
         current_event_sources = [

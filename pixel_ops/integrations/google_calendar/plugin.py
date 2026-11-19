@@ -14,6 +14,14 @@ class GoogleCalendarIntegrationPlugin:
     def build(self, ctx: IntegrationContext) -> IntegrationContribution:
         cfg = ctx.plugin_config(self.name)
         poll_seconds = int(cfg.get("poll_seconds", ctx.env_int("PIXEL_OPS_GOOGLE_CALENDAR_POLL_SECONDS", ctx.env_int("PIXEL_OPS_ICS_POLL_SECONDS", 300))))
+        if cfg.get("mode") == "oauth":
+            from pixel_ops.data_sources.google_calendar import GoogleCalendarCache
+            home = ctx.root_dir / "pixel_ops/cache/google_calendar"
+            source = GoogleCalendarCache(home, cfg.get("calendar_ids") or [], poll_seconds)
+            return IntegrationContribution(
+                event_sources=[source, CalendarEventSource(enabled=True, path=source.path, poll_seconds=poll_seconds)],
+                calendar_paths=[source.path], warmers=[source.warm],
+            )
         urls = list(cfg.get("ics_urls") or ctx.split_env_list(ctx.env_value("PIXEL_OPS_GOOGLE_CALENDAR_ICS_URL", None) or ""))
         sources: list[CalendarEventSource] = []
         cache_paths = []
