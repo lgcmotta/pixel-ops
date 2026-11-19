@@ -62,29 +62,34 @@ class PokemonPlugin:
     ) -> PixelOpsApp:
         pokemon_cfg = config["pokemon"]
         pokemon_api = self._pokemon_api(args, root_dir, pokemon_cfg)
-        state_store = PixelOpsStateStore(root_dir / "pixel_ops/state/pixel_ops.sqlite")
+        show_off = bool(display_cfg.get("show_off", {}).get("enabled"))
+        state_store = None if show_off else PixelOpsStateStore(root_dir / "pixel_ops/state/pixel_ops.sqlite")
         scene = OverworldScene(
             width,
             height,
             display_cfg["timezone_primary"],
             scanlines=bool(display_cfg.get("scanlines", True)),
             pokemon_api=pokemon_api,
-            lazy_download=bool(pokemon_cfg.get("lazy_download", True)) and not self._offline(args, pokemon_cfg),
+            lazy_download=bool(pokemon_cfg.get("lazy_download", True)) and not self._offline(args, pokemon_cfg) and not show_off,
             scene_fps=fps,
             game_config=config["game"],
             companion_config=_flatten_companion_config(config.get("companions", {})),
             display_layout=display_cfg.get("layout", {}),
             layout_theme=display_cfg.get("layout_theme", "default"),
             event_sources=[],
-            ai_plugin=ai_plugin,
+            ai_plugin=None if show_off else ai_plugin,
             capture_store=state_store,
         )
+        if show_off:
+            scene.encounter_system.capture_categories = frozenset(("pull_request",))
         engine = PokemonEngine(
             scene,
             people_config,
-            gamification=_gamification_source(display_cfg.get("gamification", {})),
+            gamification=None if show_off else _gamification_source(display_cfg.get("gamification", {})),
+            kraken_settings=display_cfg.get("kraken_web", {}),
+            show_off_settings=display_cfg.get("show_off", {}),
         )
-        return PixelOpsApp(engine=engine, event_sources=event_sources, screens=ScreenRotationController(display_cfg))
+        return PixelOpsApp(engine=engine, event_sources=event_sources, screens=None if show_off else ScreenRotationController(display_cfg))
 
     def _pokemon_api(self, args: argparse.Namespace, root_dir: Path, pokemon_cfg: dict) -> PokeApiClient:
         return PokeApiClient(

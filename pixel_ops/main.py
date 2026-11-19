@@ -17,6 +17,7 @@ if str(ROOT_DIR) not in sys.path:
 from pixel_ops.data_sources.calendar import CalendarEvent, next_ics_event, next_mock_event, today_ics_events
 from pixel_ops.config_loader import ConfigWatcher, load_config_prefer_json
 from pixel_ops.core.screen_control import ScreenControlServer
+from pixel_ops.outputs.browser import BrowserOutputServer
 from pixel_ops.events.mock_events import MockEventSource
 from pixel_ops.events.observation_sources import CallableObservationSource
 from pixel_ops.integration_plugins.base import IntegrationContext
@@ -717,6 +718,25 @@ def main() -> int:
         )
 
     runtime_state = build_runtime_state()
+    browser_output = None
+    browser_cfg = raw_display_cfg.get("kraken_web", {})
+    if browser_cfg.get("enabled") and any(target.output_name not in ("gif", "preview") for target in runtime_state.targets):
+        browser_output = BrowserOutputServer(
+            {"kraken": APP_DIR / "web/kraken"}, port=int(browser_cfg.get("port", 8767)),
+            assets={"/kraken/pixel.ttf": APP_DIR / "assets/fonts/BoutiqueBitmap9x9/BoutiqueBitmap9x9_Bold_1.92.ttf"},
+        )
+        try:
+            browser_output.start()
+            print(f"[pixel-ops browser] Kraken URL http://127.0.0.1:{browser_output.port}/kraken/", file=sys.stderr)
+        except OSError as error:
+            print(f"[pixel-ops browser] unavailable: {error}", file=sys.stderr)
+            browser_output = None
+
+    def render_runtime_frame(now):
+        frame = runtime_state.app.render_frame(now)
+        if browser_output:
+            browser_output.publish(runtime_state.app.browser_views())
+        return frame
     control_cfg = raw_display_cfg.get("screen_control", {})
     control_cfg = control_cfg if isinstance(control_cfg, dict) else {}
     screen_control = ScreenControlServer(
@@ -808,7 +828,7 @@ def main() -> int:
             start_target(target)
         if len(runtime_state.targets) == 1 and runtime_state.targets[0].output_name == "preview" and not runtime_preview_sequence(args, display_cfg):
             now = datetime.now(ZoneInfo(primary_tz))
-            send_frame(runtime_state.targets[0], runtime_state.app.render_frame(now))
+            send_frame(runtime_state.targets[0], render_runtime_frame(now))
             return 0
 
         frame_delay = 1 / fps
@@ -825,7 +845,7 @@ def main() -> int:
                 else:
                     target_splash_frames = splash_frame_count(runtime_state.display_cfg, fps) if splash_frame is not None else 0
                     now = started + timedelta(seconds=(frame_index - target_splash_frames) / fps)
-                    send_frame(target, runtime_state.app.render_frame(now))
+                    send_frame(target, render_runtime_frame(now))
             return 0
 
         if splash_frame_limit > 0:
@@ -847,7 +867,7 @@ def main() -> int:
             loop_started = time.perf_counter()
             runtime_state = maybe_reload_runtime(runtime_state)
             now = datetime.now(ZoneInfo(primary_tz))
-            frame = runtime_state.app.render_frame(now)
+            frame = render_runtime_frame(now)
             for target in runtime_state.targets:
                 send_frame(target, frame)
             elapsed = time.perf_counter() - loop_started
@@ -857,6 +877,8 @@ def main() -> int:
         print(error, file=sys.stderr)
         return 1
     finally:
+        if browser_output:
+            browser_output.close()
         screen_control.close()
         integration_runtime.close()
         runtime_state.app.close()

@@ -1,10 +1,13 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw
 
 from pixel_ops.data_sources.ai_quota import AIQuotaSnapshot, AIQuotaWindow
+from pixel_ops.events.platform import PixelOpsEvent
+from pixel_ops.plugins.pokemon.engine import PokemonEngine
 from pixel_ops.plugins.pokemon.game.day_night import day_night_palette
 from pixel_ops.render.account_hud import draw_quota
 from pixel_ops.render.fonts import font_scale_for_canvas
@@ -62,3 +65,17 @@ def test_reset_boundary_does_not_infer_new_allowance():
     rendered = texts(snapshot)
     assert 'Refreshing after reset' in rendered
     assert not any('remaining' in text or 'tokens' in text for text in rendered)
+
+
+def test_show_off_keeps_live_quota_and_updates_each_provider_independently():
+    scene = SimpleNamespace()
+    engine = PokemonEngine(scene, [], show_off_settings={'enabled': True})
+    first, second = account(), account('claude')
+    for snapshot in (first, second):
+        engine.consume(PixelOpsEvent.observation('ai.quota_updated', snapshot.provider, snapshot, NOW))
+    assert engine.quota_accounts == {'codex': first, 'claude': second}
+    refreshed = account(daily_tokens=(('2026-10-30', 41000001),))
+    engine.consume(PixelOpsEvent.observation('ai.quota_updated', 'codex', refreshed, NOW))
+    assert engine.quota_accounts['codex'] is refreshed
+    assert engine.quota_accounts['claude'] is second
+    assert engine.values['ai.quota_updated'] is refreshed

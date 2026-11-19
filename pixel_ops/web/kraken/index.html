@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PixelOps · Kraken</title>
+  <link rel="stylesheet" href="/kraken/style.css">
+</head>
+<body>
+  <main><canvas id="screen" width="640" height="640" aria-label="PixelOps Kraken thermal display"></canvas></main>
+  <aside id="setup" hidden>
+    <h1>PixelOps · Kraken</h1>
+    <p>In NZXT CAM, choose Web Integration → Custom, then enter this page’s URL.</p>
+    <p>Live temperatures come from CAM. Keep PixelOps running; Config Studio can be closed.</p>
+    <p><a href="?demo=thermal">Sample thermal preview</a> · <a href="?demo=meeting">Sample meeting preview</a> · <a href="?demo=battle">Sample battle preview</a> · <a href="?">Live view</a></p>
+    <p id="connection" role="status">Connecting to PixelOps…</p>
+    <p id="sensors">Waiting for CAM monitoring data.</p>
+  </aside>
+  <script type="module" src="/kraken/app.mjs"></script>
+</body>
+</html>
