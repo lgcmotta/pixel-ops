@@ -60,10 +60,14 @@ class MapRouteManager:
         self.viewport_size = normalized
         self._background_cache.clear()
 
-    def area_for_timestamp(self, timestamp: float) -> MapArea | None:
+    def area_for_timestamp(self, timestamp: float, minimum_crop_size: tuple[int, int] | None = None) -> MapArea | None:
         if not self.areas:
             return None
         areas = self._filtered_areas_for_mock() or self.areas
+        if minimum_crop_size:
+            wide_areas = [area for area in areas if area.crop_box[2] - area.crop_box[0] >= minimum_crop_size[0]
+                          and area.crop_box[3] - area.crop_box[1] >= minimum_crop_size[1]]
+            areas = wide_areas or areas
         bucket = int(timestamp // max(1, self.switch_seconds))
         groups = self._areas_by_map_key(areas)
         map_keys = list(groups)
