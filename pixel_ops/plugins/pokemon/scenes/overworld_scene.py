@@ -153,6 +153,7 @@ class OverworldScene:
             sources=self.event_sources,
             queue_limit=int(cfg.get("events", {}).get("queue_limit", 6)),
             on_event=self.mood_engine.observe,
+            capture_categories=cfg.get("events", {}).get("capture_categories"),
         )
         self.encounter = self.encounter_system.idle_context()
         self.capture_store = capture_store
@@ -419,7 +420,9 @@ class OverworldScene:
             if self._presentation_has("game"):
                 self._draw_sky(draw, pal)
                 self._draw_world(img, draw, pal, base_now, weather)
-                draw_social_world_effects(img, self.map_box, self.current_mood, self.frame)
+                game_layout = self.display_layout.get("game", {})
+                particles = game_layout.get("ambient_particles", True) if isinstance(game_layout, dict) else True
+                draw_social_world_effects(img, self.map_box, self.current_mood, self.frame, particles=bool(particles))
                 self._draw_movement_debug_overlay(draw, pal)
             draw_hud(
                 draw,
@@ -505,6 +508,19 @@ class OverworldScene:
 
     def _draw_pokemon_capture_hud(self, draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], pal) -> None:
         PixelRenderer.draw_panel(draw, box, pal.panel, pal.panel_shadow, pal.ink)
+        if box[2] - box[0] >= 360 and box[3] - box[1] <= 110:
+            x0, y0, x1, _ = box
+            draw.text((x0 + 16, y0 + 10), "LATEST CAPTURE", font=font(15), fill=pal.blue)
+            if not self.captured_pokemon:
+                draw.text((x0 + 16, y0 + 40), "Waiting for a GitHub encounter", font=font(11), fill=pal.ink)
+                return
+            record = self.captured_pokemon[0]
+            _draw_tiny_pokeball(draw, x0 + 16, y0 + 40, 14, pal)
+            name = _fit_text(draw, f"#{record.number:03d} {record.name.upper()}", x1 - x0 - 64, font(13))
+            draw.text((x0 + 40, y0 + 37), name, font=font(13), fill=pal.ink)
+            cause = f"{record.captured_at:%H:%M} / {record.cause}"
+            draw.text((x0 + 16, y0 + 61), _fit_text(draw, cause, x1 - x0 - 32, font(10)), font=font(10), fill=pal.blue)
+            return
         row_font = font(8)
         cause_font = font(7)
         x0, y0, x1, y1 = _draw_panel_title(draw, box, "POKEMON CAUGHT", pal)
@@ -990,7 +1006,29 @@ class OverworldScene:
         self._draw_battle_sprites(img, phase)
 
     def _battle_background_for_current_mood(self, pal) -> Image.Image:
-        return apply_battle_ambience(self._battle_background_image(pal), self.current_mood)
+        background = apply_battle_ambience(self._battle_background_image(pal), self.current_mood)
+        # The widescreen keeps PR identity visible through every capture phase.
+        # Put it in the dynamic background so dirty-region restores retain it.
+        if (background.width >= 700 and getattr(self, "_show_pr_identity", True)
+                and self.encounter.event and self.encounter.event.category == EventCategory.PULL_REQUEST):
+            background = background.copy()
+            draw = ImageDraw.Draw(background)
+            width = int(background.width * .6) - 24
+            reference = f"{self.encounter.pr_reference} {self.encounter.pokemon.name.upper()}"
+            size = 14
+            while size > 10 and draw.textlength(reference, font=font(size)) > width - 16:
+                size -= 1
+            if draw.textlength(reference, font=font(size)) > width - 16:
+                suffix = f"#{self.encounter.pr_number}" if self.encounter.pr_number is not None else ""
+                suffix += f" {self.encounter.pokemon.name.upper()}"
+                repository = self.encounter.pr_repository
+                while repository and draw.textlength(repository + "..." + suffix, font=font(size)) > width - 16:
+                    repository = repository[:-1]
+                reference = repository + "..." + suffix
+            draw.rectangle((12, 8, 12 + width, 57), fill=pal.panel, outline=pal.panel_shadow)
+            draw.text((20, 13), "PR ENCOUNTER", font=font(12), fill=(0, 0, 0))
+            draw.text((20, 33), reference, font=font(size), fill=(0, 0, 0))
+        return background
 
     def _battle_background_image(self, pal) -> Image.Image:
         cached = self._battle_backgrounds.get(pal.phase)
@@ -1940,7 +1978,7 @@ def _capture_cause_label(event: WorkEvent | None) -> str:
     base = labels.get(event.category, event.category.value.replace("_", " ").upper())
     if event.category in (EventCategory.MESSAGE_IMPORTANT, EventCategory.SOCIAL_ACTIVITY, EventCategory.SOCIAL_PRESENCE, EventCategory.SOCIAL_QUIET):
         return base
-    context = event.repo or event.metadata.get("repo") or event.title
+    context = event.external_id.split(":", 1)[0] if event.source == "github" and event.external_id else event.repo or event.metadata.get("repo") or event.title
     if not context:
         return base
     return f"{base} {_compact_capture_context(context)}"

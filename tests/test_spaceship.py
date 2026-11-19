@@ -50,6 +50,16 @@ class RecordingScene:
 
 
 class SpaceshipTests(unittest.TestCase):
+    def test_full_repository_identity_matches_work_event_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SpaceshipStateStore(Path(tmp) / "state.sqlite")
+            engine = SpaceshipEngine(RecordingScene(), store)
+            now = datetime.now(timezone.utc)
+            prs = [PullRequestSummary("shared", 1, "PR", "dev", repository=repo) for repo in ("one/shared", "two/shared")]
+            engine.consume(PixelOpsEvent.observation("github.pull_requests_updated", "github", prs, now))
+            engine.consume(WorkEvent(category=EventCategory.REVIEW_REQUESTED, title="Review", source="github", external_id="one/shared#1", occurred_at=now))
+            self.assertEqual({asteroid.pr_key for asteroid in store.asteroids()}, {"one/shared#1", "two/shared#1"})
+
     def test_spaceship_hud_is_composed_inside_configured_layout_box(self):
         scene = SpaceshipScene.__new__(SpaceshipScene)
         scene.renderer = PixelRenderer(100, 50)

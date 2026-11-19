@@ -22,10 +22,14 @@ def draw_social_world_effects(
     box: tuple[int, int, int, int],
     state: WorldMoodState,
     frame: int,
+    *, particles: bool = True,
 ) -> None:
     color, alpha = MOOD_TINTS.get(state.mood, ((96, 120, 160), 0.08))
     if state.intensity > 0:
         _blend_region(img, box, color, min(0.28, alpha * max(0.35, state.intensity)))
+
+    if not particles:
+        return
 
     draw = ImageDraw.Draw(img)
     if "crowd" in state.particles:
