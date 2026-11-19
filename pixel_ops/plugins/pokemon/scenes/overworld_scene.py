@@ -307,6 +307,7 @@ class OverworldScene:
         work_events: list[WorkEvent] | None = None,
         crosshero=None,
         ai_activity=None,
+        ai_quota=None,
     ):
         with font_scale_for_canvas(self.renderer.width, self.renderer.height):
             base_now = now or datetime.now(ZoneInfo(self.primary_timezone))
@@ -331,6 +332,7 @@ class OverworldScene:
                 work_events=recent_events,
                 crosshero=crosshero,
                 ai_activity=ai_activity,
+                ai_quota=ai_quota,
             )
 
     def render_full(
@@ -352,6 +354,7 @@ class OverworldScene:
         work_events: list[WorkEvent] | None = None,
         crosshero=None,
         ai_activity=None,
+        ai_quota=None,
     ) -> Image.Image:
         with font_scale_for_canvas(self.renderer.width, self.renderer.height):
             phase = phase or self.state.phase
@@ -375,6 +378,7 @@ class OverworldScene:
                 work_events=work_events,
                 crosshero=crosshero,
                 ai_activity=ai_activity,
+                ai_quota=ai_quota,
             )
             if self._presentation_has("game"):
                 if self._is_battle_phase(phase):
@@ -451,6 +455,7 @@ class OverworldScene:
         work_events: list[WorkEvent] | None = None,
         crosshero=None,
         ai_activity=None,
+        ai_quota=None,
     ) -> Image.Image:
         with font_scale_for_canvas(self.renderer.width, self.renderer.height):
             base_now = now or datetime.now(ZoneInfo(self.primary_timezone))
@@ -486,6 +491,7 @@ class OverworldScene:
                 layout_theme=self.layout_theme,
                 crosshero=crosshero,
                 ai_activity=ai_activity,
+                ai_quota=ai_quota,
             )
             self._draw_pokemon_capture_huds(draw, pal)
             return img

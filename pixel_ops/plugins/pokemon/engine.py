@@ -5,6 +5,7 @@ from datetime import datetime
 from PIL import Image
 
 from pixel_ops.data_sources.companions import CompanionSnapshot, calendar_companion_snapshot, merge_companion_snapshots
+from pixel_ops.data_sources.ai_quota import AIQuotaSnapshot
 from pixel_ops.data_sources.gamification import GamificationSource
 from pixel_ops.data_sources.timezones import build_people_times
 from pixel_ops.events.base import WorkEvent
@@ -23,6 +24,7 @@ class PokemonEngine:
         self.gamification_source = gamification
         self.now: datetime | None = None
         self.values: dict[str, object] = {}
+        self.quota_accounts: dict[str, AIQuotaSnapshot] = {}
 
     def consume(self, event: PixelOpsEvent | WorkEvent) -> None:
         if isinstance(event, WorkEvent):
@@ -37,6 +39,8 @@ class PokemonEngine:
                 self.people_config = value
             return
         value = event.payload.get("value")
+        if event.type == "ai.quota_updated" and isinstance(value, AIQuotaSnapshot):
+            self.quota_accounts[value.provider] = value
         if event.type == "social.companions_updated" and isinstance(value, CompanionSnapshot):
             current = self.values.get(event.type)
             if isinstance(current, CompanionSnapshot) and current is not value:
@@ -79,6 +83,7 @@ class PokemonEngine:
             gamification=gamification,
             crosshero=self.values.get("fitness.crosshero_day_updated"),
             ai_activity=self.values.get("ai.activity_updated"),
+            ai_quota=tuple(self.quota_accounts.values()) or self.values.get("ai.quota_updated"),
         )
 
     def set_presentation(self, layout: dict, layout_theme: str) -> None:
