@@ -47,9 +47,7 @@ from pixel_ops.plugins.pokemon.render.social_effects import draw_social_world_ef
 from pixel_ops.plugins.pokemon.render.text_box import (
     draw_text_box,
     scroll_line_start,
-    text_box_top_padding,
-    text_box_visible_lines,
-    wrap_text_lines,
+    text_box_layout,
 )
 from pixel_ops.plugins.pokemon.render.tiles import TILE, draw_house, draw_lamp, draw_tree, make_tile
 
@@ -678,25 +676,17 @@ class OverworldScene:
         return "The world feels ambient."
 
     def _text_scroll_start(self, message: str, text_frame: int) -> int:
-        x0, y0, x1, y1 = self.text_box
-        text_x = x0 + scaled_px(12)
-        text_y = y0 + text_box_top_padding()
-        max_lines = text_box_visible_lines(self.text_box, message, text_y=text_y)
         scratch = Image.new("RGB", (1, 1))
         draw = ImageDraw.Draw(scratch)
-        lines = wrap_text_lines(draw, message, font(14), x1 - text_x - scaled_px(26))
+        _, _, lines, max_lines = text_box_layout(draw, self.text_box, message)
         return scroll_line_start(lines, max_lines, text_frame)
 
     def _message_scroll_seconds(self, message: str) -> float:
         if not message:
             return 0.0
-        x0, y0, x1, y1 = self.text_box
-        text_x = x0 + scaled_px(12)
-        text_y = y0 + text_box_top_padding()
-        max_lines = text_box_visible_lines(self.text_box, message, text_y=text_y)
         scratch = Image.new("RGB", (1, 1))
         draw = ImageDraw.Draw(scratch)
-        lines = wrap_text_lines(draw, message, font(14), x1 - text_x - scaled_px(26))
+        _, _, lines, max_lines = text_box_layout(draw, self.text_box, message)
         hidden_lines = max(0, len(lines) - max_lines)
         if hidden_lines == 0:
             return 0.0
